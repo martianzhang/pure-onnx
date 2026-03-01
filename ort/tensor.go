@@ -198,6 +198,8 @@ func (t *Tensor[T]) Destroy() error {
 	if handle != 0 && releaseValue != nil {
 		releaseValue(handle)
 	} else if handle != 0 {
+		// Safe to unpin: the ORT environment is already destroyed, so nothing
+		// will access the backing data through the leaked handle.
 		if pinner != nil {
 			pinner.Unpin()
 		}

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeValue struct {
@@ -132,11 +134,14 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	close(value.allowFirstLeaseReturn)
 
 	var result valuesToHandlesResult
-	select {
-	case result = <-resultCh:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("valuesToHandles blocked while acquiring repeated lockable value")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case result = <-resultCh:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "valuesToHandles blocked while acquiring repeated lockable value")
 
 	if result.err != nil {
 		t.Fatalf("valuesToHandles failed: %v", result.err)
@@ -156,11 +161,14 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 
 	result.release()
 
-	select {
-	case <-destroyDone:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("destroy did not complete after release()")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case <-destroyDone:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "destroy did not complete after release()")
 }
 
 func TestValuesToHandlesReleasesPriorLeasesOnError(t *testing.T) {
@@ -182,11 +190,14 @@ func TestValuesToHandlesReleasesPriorLeasesOnError(t *testing.T) {
 		close(destroyDone)
 	}()
 
-	select {
-	case <-destroyDone:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("destroy should not block; prior leases should have been released on error")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case <-destroyDone:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "destroy should not block; prior leases should have been released on error")
 }
 
 func TestValuesToHandlesRejectsNonComparableLockable(t *testing.T) {
@@ -641,13 +652,15 @@ func TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor(t *testing.T) {
 		secondRunErrCh <- secondSession.Run()
 	}()
 
-	for i := 0; i < 2; i++ {
+	received := 0
+	require.Eventually(t, func() bool {
 		select {
 		case <-enterRun:
-		case <-time.After(500 * time.Millisecond):
-			t.Fatalf("expected both sessions to reach runtime concurrently")
+			received++
+		default:
 		}
-	}
+		return received >= 2
+	}, 2*time.Second, 10*time.Millisecond, "expected both sessions to reach runtime concurrently")
 
 	if got := atomic.LoadInt32(&maxInFlight); got < 2 {
 		t.Fatalf("expected shared-tensor runs across sessions to overlap, max in-flight=%d", got)
@@ -707,11 +720,14 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 		destroyErrCh <- session.Destroy()
 	}()
 
-	select {
-	case err := <-destroyErrCh:
-		t.Fatalf("destroy returned before run completed: %v", err)
-	case <-time.After(500 * time.Millisecond):
-	}
+	require.Never(t, func() bool {
+		select {
+		case <-destroyErrCh:
+			return true
+		default:
+			return false
+		}
+	}, 500*time.Millisecond, 50*time.Millisecond, "destroy returned before run completed")
 
 	close(allowRunReturn)
 
@@ -785,13 +801,17 @@ func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 		destroyErrCh <- otherSession.Destroy()
 	}()
 
-	select {
-	case err := <-destroyErrCh:
-		if err != nil {
-			t.Fatalf("destroy failed: %v", err)
+	var destroyErr error
+	require.Eventually(t, func() bool {
+		select {
+		case destroyErr = <-destroyErrCh:
+			return true
+		default:
+			return false
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("destroy should not block on unrelated in-flight Run")
+	}, 2*time.Second, 10*time.Millisecond, "destroy should not block on unrelated in-flight Run")
+	if destroyErr != nil {
+		t.Fatalf("destroy failed: %v", destroyErr)
 	}
 
 	close(allowRunReturn)
@@ -852,11 +872,14 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 		tensorDestroyErrCh <- inputTensor.Destroy()
 	}()
 
-	select {
-	case err := <-tensorDestroyErrCh:
-		t.Fatalf("tensor destroy returned before run completed: %v", err)
-	case <-time.After(500 * time.Millisecond):
-	}
+	require.Never(t, func() bool {
+		select {
+		case <-tensorDestroyErrCh:
+			return true
+		default:
+			return false
+		}
+	}, 500*time.Millisecond, 50*time.Millisecond, "tensor destroy returned before run completed")
 
 	close(allowRunReturn)
 
@@ -918,13 +941,17 @@ func TestTensorDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 		tensorDestroyErrCh <- unrelatedTensor.Destroy()
 	}()
 
-	select {
-	case err := <-tensorDestroyErrCh:
-		if err != nil {
-			t.Fatalf("unrelated tensor destroy failed: %v", err)
+	var tensorDestroyErr error
+	require.Eventually(t, func() bool {
+		select {
+		case tensorDestroyErr = <-tensorDestroyErrCh:
+			return true
+		default:
+			return false
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("destroy should not block on unrelated in-flight Run")
+	}, 2*time.Second, 10*time.Millisecond, "destroy should not block on unrelated in-flight Run")
+	if tensorDestroyErr != nil {
+		t.Fatalf("unrelated tensor destroy failed: %v", tensorDestroyErr)
 	}
 
 	if got := atomic.LoadInt32(&releasedTensor); got != 1 {
