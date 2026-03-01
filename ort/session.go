@@ -3,6 +3,7 @@ package ort
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -113,7 +114,9 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	}
 
 	runtime.SetFinalizer(session, func(s *AdvancedSession) {
-		_ = s.Destroy()
+		if err := s.Destroy(); err != nil {
+			logFinalizerWarning("WARNING: session finalizer destroy failed: %v", err)
+		}
 	})
 
 	return session, nil
@@ -178,14 +181,17 @@ func (s *AdvancedSession) Run() error {
 	inputNameBackings, inputNamePtrs := makeCStringPointerArray(inputNames)
 	outputNameBackings, outputNamePtrs := makeCStringPointerArray(outputNames)
 
-	inputValueHandles, err := valuesToHandles(inputValues, "input")
+	inputValueHandles, releaseInputValueHandles, err := valuesToHandles(inputValues, "input")
 	if err != nil {
 		return err
 	}
-	outputValueHandles, err := valuesToHandles(outputValues, "output")
+	defer releaseInputValueHandles()
+
+	outputValueHandles, releaseOutputValueHandles, err := valuesToHandles(outputValues, "output")
 	if err != nil {
 		return err
 	}
+	defer releaseOutputValueHandles()
 
 	status := run(
 		sessionHandle,
@@ -247,6 +253,8 @@ func (s *AdvancedSession) Destroy() error {
 
 	if handle != 0 && releaseSession != nil {
 		releaseSession(handle)
+	} else if handle != 0 {
+		return fmt.Errorf("cannot destroy session: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment()")
 	}
 
 	return nil
@@ -256,6 +264,14 @@ func (s *AdvancedSession) Destroy() error {
 // Today, sessions only support Value implementations created by this package.
 type valueWithORTHandle interface {
 	ortValueHandle() uintptr
+}
+
+// valueRunLockable values can provide a stable handle lease for the whole Run() call.
+// This lets Destroy() wait only on sessions currently using that specific value.
+// Implementations must be comparable so repeated values can be deduplicated safely.
+type valueRunLockable interface {
+	lockForRun() (uintptr, error)
+	unlockForRun()
 }
 
 var (
@@ -290,22 +306,75 @@ func validateSessionValue(v Value, role string, index int) error {
 	return fmt.Errorf("invalid %s value at index %d: %w", role, index, err)
 }
 
-func valuesToHandles(values []Value, role string) ([]uintptr, error) {
+func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
+	noOpRelease := func() {}
 	if len(values) == 0 {
-		return nil, nil
+		return nil, noOpRelease, nil
 	}
 	handles := make([]uintptr, len(values))
+	unlockFns := make([]func(), 0, len(values))
+	leasedLockables := make(map[any]int, len(values))
+	release := func() {
+		for i := len(unlockFns) - 1; i >= 0; i-- {
+			unlockFns[i]()
+		}
+	}
+
 	for i, v := range values {
+		if lockable, ok := v.(valueRunLockable); ok {
+			key, keyOk := comparableIdentityKey(lockable)
+			if !keyOk {
+				release()
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable", role, i, v)
+			}
+
+			// Lease each comparable lockable only once per Run(). This avoids a deadlock
+			// when the same value is bound multiple times and Destroy() queues on the
+			// writer side of that value's RWMutex.
+			if leasedIndex, exists := leasedLockables[key]; exists {
+				handles[i] = handles[leasedIndex]
+				continue
+			}
+
+			handle, err := lockable.lockForRun()
+			if err != nil {
+				release()
+				if errors.Is(err, errValueDestroyed) {
+					return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+				}
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+			}
+			handles[i] = handle
+			unlockFns = append(unlockFns, lockable.unlockForRun)
+			leasedLockables[key] = i
+			continue
+		}
+
+		// Non-lockable values are a compatibility fallback for package-local test doubles.
+		// Production Value implementations should provide valueRunLockable leases.
 		handle, err := valueHandle(v)
 		if err != nil {
+			release()
 			if errors.Is(err, errValueDestroyed) {
-				return nil, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
 			}
-			return nil, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+			return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
 		}
+
 		handles[i] = handle
 	}
-	return handles, nil
+	return handles, release, nil
+}
+
+func comparableIdentityKey(v any) (any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	t := reflect.TypeOf(v)
+	if !t.Comparable() {
+		return nil, false
+	}
+	return v, true
 }
 
 func cloneStringSlice(input []string) []string {

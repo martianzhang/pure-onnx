@@ -38,7 +38,9 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 
 	// Set finalizer to ensure cleanup even if Destroy() is not called
 	runtime.SetFinalizer(memInfo, func(m *MemoryInfo) {
-		_ = m.Destroy()
+		if err := m.Destroy(); err != nil {
+			logFinalizerWarning("WARNING: memory info finalizer destroy failed: %v", err)
+		}
 	})
 
 	return memInfo, nil
@@ -53,19 +55,34 @@ func CreateCpuMemoryInfo(allocatorType AllocatorType, memType MemType) (*MemoryI
 // Destroy releases the memory info resources.
 // Maps to OrtApi::ReleaseMemoryInfo in the ONNX Runtime C API.
 func (m *MemoryInfo) Destroy() error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if m.handle == 0 {
+	if m == nil {
 		return nil
 	}
 
-	if releaseMemoryInfoFunc != nil {
-		releaseMemoryInfoFunc(m.handle)
-	}
+	// Keep environment teardown from racing the native release call.
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
 
+	var (
+		handle            uintptr
+		releaseMemoryInfo func(uintptr)
+	)
+
+	mu.Lock()
+	handle = m.handle
+	releaseMemoryInfo = releaseMemoryInfoFunc
 	m.handle = 0
 	runtime.SetFinalizer(m, nil)
+	mu.Unlock()
+
+	if handle == 0 {
+		return nil
+	}
+
+	if releaseMemoryInfo == nil {
+		return fmt.Errorf("cannot destroy memory info: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors, sessions, and memory infos are destroyed before calling DestroyEnvironment()")
+	}
+	releaseMemoryInfo(handle)
 	return nil
 }
 
