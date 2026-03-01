@@ -81,11 +81,12 @@ release:
 	@echo "$(YELLOW)Building release bundles for $(RELEASE_VERSION)...$(NC)"
 	@mkdir -p dist $(RELEASE_DIR)
 	@rm -f dist/$(PROJECT_NAME)-$(RELEASE_VERSION)-*.tar.gz
-	@for platform in $(RELEASE_PLATFORMS); do \
+	@bash -euo pipefail -c '\
+	for platform in $(RELEASE_PLATFORMS); do \
 		os=$${platform%-*}; \
 		arch=$${platform##*-}; \
 		stage_dir="$(RELEASE_DIR)/$(PROJECT_NAME)-$(RELEASE_VERSION)-$$os-$$arch"; \
-		echo "$(YELLOW)Packaging $$os/$$arch...$(NC)"; \
+		echo "Packaging $$os/$$arch..."; \
 		rm -rf "$$stage_dir"; \
 		mkdir -p "$$stage_dir/bin"; \
 		ext=""; \
@@ -97,7 +98,7 @@ release:
 			"$(PROJECT_NAME)" "$(RELEASE_VERSION)" "$$os" "$$arch" "$(RELEASE_BINARIES)" > "$$stage_dir/ARTIFACTS.txt"; \
 		tar -czf "dist/$(PROJECT_NAME)-$(RELEASE_VERSION)-$$os-$$arch.tar.gz" \
 			-C "$(RELEASE_DIR)" "$(PROJECT_NAME)-$(RELEASE_VERSION)-$$os-$$arch"; \
-	done
+	done'
 	@echo "$(GREEN)✓ Release bundles created in dist/$(NC)"
 
 ## test: Run tests
@@ -208,6 +209,7 @@ clean:
 	$(GO) clean ./...
 	rm -f coverage.out coverage.html
 	rm -rf $(ORT_DIR)
+	rm -rf dist $(RELEASE_DIR)
 	rm -f *.test
 	rm -f *.prof
 	@echo "$(GREEN)✓ Clean complete$(NC)"

@@ -137,9 +137,25 @@ jobs:
           ISSUER="https://token.actions.githubusercontent.com"
           IDENTITY="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RELEASES_JSON_PATH=/tmp/releases.json
+          RELEASES_FETCH_ERR="$(mktemp)"
 
-          aws s3 cp "s3://${BUCKET}/${PROJECT}/releases.json" /tmp/releases.json \
-            --endpoint-url "${R2_ENDPOINT}" || echo '{"releases":[]}' > /tmp/releases.json
+          set +e
+          aws s3 cp "s3://${BUCKET}/${PROJECT}/releases.json" "${RELEASES_JSON_PATH}" \
+            --endpoint-url "${R2_ENDPOINT}" 2>"${RELEASES_FETCH_ERR}"
+          fetch_status=$?
+          set -e
+
+          if [ "${fetch_status}" -ne 0 ]; then
+            if grep -Eiq "NoSuchKey|404|Not Found|does not exist" "${RELEASES_FETCH_ERR}"; then
+              echo '{"releases":[]}' > "${RELEASES_JSON_PATH}"
+            else
+              echo "Failed to fetch existing releases.json from R2"
+              cat "${RELEASES_FETCH_ERR}"
+              exit 1
+            fi
+          fi
+          rm -f "${RELEASES_FETCH_ERR}"
 
           jq --arg version "${VERSION}" \
              --arg date "${NOW}" \
@@ -158,7 +174,7 @@ jobs:
                 | sort_by(.date)
                 | reverse
                 | .[:100]
-              )' /tmp/releases.json > /tmp/releases.new.json
+              )' "${RELEASES_JSON_PATH}" > /tmp/releases.new.json
 
           mv /tmp/releases.new.json /tmp/releases.json
 
@@ -196,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
-            echo "CLOUDFLARE_API_TOKEN is not set; skipping cache purge."
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping cache purge."
             exit 0
           fi
           curl -sf -X POST \
@@ -213,7 +229,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
-            echo "CLOUDFLARE_API_TOKEN is not set; skipping cache purge."
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping cache purge."
             exit 0
           fi
           curl -sf -X POST \

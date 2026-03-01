@@ -4,6 +4,7 @@ This repository publishes signed release artifacts to:
 
 - `https://releases.amikos.tech/pure-onnx/<version>/...`
 - `https://releases.amikos.tech/pure-onnx/latest.json`
+- `https://github.com/amikos-tech/pure-onnx/releases`
 
 The workflow is implemented in `.github/workflows/release.yml` and runs on tag pushes matching `v*`.
 
@@ -71,7 +72,8 @@ curl -LO "${BASE_URL}/SHA256SUMS"
 curl -LO "${BASE_URL}/SHA256SUMS.sig"
 curl -LO "${BASE_URL}/SHA256SUMS.pem"
 
-sha256sum -c SHA256SUMS
+# Verify only the artifact you downloaded (Linux example).
+grep " ${PROJECT}-${TAG}-linux-amd64.tar.gz$" SHA256SUMS | sha256sum -c -
 
 cosign verify-blob \
   --signature "${PROJECT}-${TAG}-linux-amd64.tar.gz.sig" \
@@ -86,4 +88,10 @@ cosign verify-blob \
   --certificate-identity "https://github.com/amikos-tech/pure-onnx/.github/workflows/release.yml@refs/tags/${TAG}" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   SHA256SUMS
+```
+
+On macOS, replace `sha256sum` with `shasum -a 256`:
+
+```bash
+grep " ${PROJECT}-${TAG}-darwin-arm64.tar.gz$" SHA256SUMS | shasum -a 256 -c -
 ```
