@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/amikos-tech/pure-onnx/ort"
@@ -19,11 +20,26 @@ func TestEmbedTextsAndImagesWithOpenCLIPModel(t *testing.T) {
 	tokenizerPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_PATH")
 	preprocessorPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_PATH")
 	if textModelPath == "" || visionModelPath == "" || tokenizerPath == "" || preprocessorPath == "" {
-		t.Skip(
-			"set ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_PATH, ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_PATH, " +
-				"ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_PATH, and ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_PATH " +
-				"to run OpenCLIP integration test",
-		)
+		opts := []BootstrapOption{}
+		if cacheDir := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_MODEL_CACHE_DIR")); cacheDir != "" {
+			opts = append(opts, WithBootstrapCacheDir(cacheDir))
+		}
+		if token := strings.TrimSpace(os.Getenv("HF_TOKEN")); token != "" {
+			opts = append(opts, WithBootstrapToken(token))
+		}
+		assets, err := EnsureDefaultAssets(opts...)
+		if err != nil {
+			t.Fatalf(
+				"failed to bootstrap default OpenCLIP assets (%s@%s): %v",
+				DefaultBootstrapRepoID,
+				DefaultBootstrapRevision,
+				err,
+			)
+		}
+		textModelPath = assets.TextModelPath
+		visionModelPath = assets.VisionModelPath
+		tokenizerPath = assets.TokenizerPath
+		preprocessorPath = assets.PreprocessorConfigPath
 	}
 
 	embedder, err := NewEmbedder(textModelPath, visionModelPath, tokenizerPath, preprocessorPath)

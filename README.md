@@ -237,6 +237,10 @@ Defaults are aligned with the pinned OpenCLIP export contract:
 - L2 normalization enabled by default (toggle with `WithoutL2Normalization()`)
 - per-modality LRU session cache (default `8` per modality, configurable)
 
+Built-in bootstrap can download and cache the default model bundle:
+- repo: `amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx`
+- revision: `248a2ed76a7189fc080e654e36930171331ef085`
+
 ```go
 package main
 
@@ -256,11 +260,16 @@ func main() {
     }
     defer ort.DestroyEnvironment()
 
+    assets, err := openclip.EnsureDefaultAssets()
+    if err != nil {
+        log.Fatal(err)
+    }
+
     embedder, err := openclip.NewEmbedder(
-        "/path/to/text_model.onnx",
-        "/path/to/vision_model.onnx",
-        "/path/to/tokenizer.json",
-        "/path/to/preprocessor_config.json",
+        assets.TextModelPath,
+        assets.VisionModelPath,
+        assets.TokenizerPath,
+        assets.PreprocessorConfigPath,
     )
     if err != nil {
         log.Fatal(err)
