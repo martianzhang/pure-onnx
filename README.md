@@ -219,6 +219,66 @@ func main() {
 }
 ```
 
+### Optional OpenCLIP Embeddings Layer (`embeddings/openclip`)
+
+For local CLIP text + image embeddings, use:
+`github.com/amikos-tech/pure-onnx/embeddings/openclip`.
+
+Expected artifacts from the OpenCLIP export tooling:
+- `text_model.onnx`
+- `vision_model.onnx`
+- `tokenizer.json`
+- `preprocessor_config.json`
+
+Defaults are aligned with the pinned OpenCLIP export contract:
+- text inputs: `input_ids`, `attention_mask`; output: `text_embeds`
+- vision input: `pixel_values`; output: `image_embeds`
+- sequence length `77`, image size `224`, embedding width `512`
+- L2 normalization enabled by default (toggle with `WithoutL2Normalization()`)
+- per-modality LRU session cache (default `8` per modality, configurable)
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/amikos-tech/pure-onnx/embeddings/openclip"
+    "github.com/amikos-tech/pure-onnx/ort"
+)
+
+func main() {
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil {
+        log.Fatal(err)
+    }
+    if err := ort.InitializeEnvironment(); err != nil {
+        log.Fatal(err)
+    }
+    defer ort.DestroyEnvironment()
+
+    embedder, err := openclip.NewEmbedder(
+        "/path/to/text_model.onnx",
+        "/path/to/vision_model.onnx",
+        "/path/to/tokenizer.json",
+        "/path/to/preprocessor_config.json",
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer embedder.Close()
+
+    textEmbeds, err := embedder.EmbedTexts([]string{"a photo of a cat", "a photo of a dog"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = textEmbeds // [][]float32
+}
+```
+
+Similarity helpers are also available:
+- `openclip.CosineSimilarity(a, b)`
+- `openclip.CLIPSimilarityLogits(imageEmbeddings, textEmbeddings, openclip.DefaultCLIPLogitScale)`
+
 ### OpenCLIP ONNX Export Tooling (`tools/openclip_export_onnx.py`)
 
 To generate pinned OpenCLIP ONNX artifacts (split text + vision encoders):
