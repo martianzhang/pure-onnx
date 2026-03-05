@@ -341,6 +341,64 @@ func TestEnsureDefaultAssetsCustomRepoRequiresChecksums(t *testing.T) {
 	}
 }
 
+func TestSanitizeBootstrapPathComponentRejectsTraversal(t *testing.T) {
+	if _, err := sanitizeBootstrapPathComponent("..", "repo ID"); err == nil {
+		t.Fatalf("expected traversal rejection for dot-segment repo ID")
+	}
+	if _, err := sanitizeBootstrapPathComponent("owner/repo", "repo ID"); err != nil {
+		t.Fatalf("expected slash replacement to be accepted, got: %v", err)
+	}
+	if _, err := sanitizeBootstrapPathComponent("owner\\repo", "repo ID"); err != nil {
+		t.Fatalf("expected backslash replacement to be accepted, got: %v", err)
+	}
+}
+
+func TestEnsureModelAssetsRejectsPathTraversalRepoID(t *testing.T) {
+	_, err := ensureModelAssets(bootstrapConfig{
+		repoID:           "..",
+		revision:         "main",
+		baseURL:          DefaultBootstrapBaseURL,
+		cacheDir:         t.TempDir(),
+		verifySHA:        false,
+		maxDownloadBytes: defaultMaxDownloadBytes,
+		httpClient:       &http.Client{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid repo ID") {
+		t.Fatalf("expected invalid repo ID error, got: %v", err)
+	}
+}
+
+func TestEnsureModelAssetsRejectsPathTraversalRevision(t *testing.T) {
+	_, err := ensureModelAssets(bootstrapConfig{
+		repoID:           "repo/owner",
+		revision:         "..",
+		baseURL:          DefaultBootstrapBaseURL,
+		cacheDir:         t.TempDir(),
+		verifySHA:        false,
+		maxDownloadBytes: defaultMaxDownloadBytes,
+		httpClient:       &http.Client{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid revision") {
+		t.Fatalf("expected invalid revision error, got: %v", err)
+	}
+}
+
+func TestEnsureAssetFileRejectsExpectedSizeOverMaxDownloadBytes(t *testing.T) {
+	cfg := bootstrapConfig{
+		verifySHA:        false,
+		maxDownloadBytes: 16,
+		httpClient:       &http.Client{},
+	}
+	destination := filepath.Join(t.TempDir(), textModelFileName)
+	err := ensureAssetFile(cfg, destination, textModelFileName, "", 64)
+	if err == nil || !strings.Contains(err.Error(), "expected size for text_model.onnx exceeds configured max download bytes") {
+		t.Fatalf("expected expected-size cap mismatch error, got: %v", err)
+	}
+	if _, statErr := os.Stat(destination); statErr == nil {
+		t.Fatalf("expected no download artifact for failed size-cap validation")
+	}
+}
+
 func assertFileContains(t *testing.T, path string, expected []byte) {
 	t.Helper()
 	got, err := os.ReadFile(path)

@@ -315,6 +315,18 @@ func TestPreprocessImagesIntoValidation(t *testing.T) {
 	}
 }
 
+func TestGetRGBRespectsConvertRGBFlag(t *testing.T) {
+	colorValue := color.NRGBA{R: 10, G: 20, B: 30, A: 255}
+	r, g, b := getRGB(colorValue, true)
+	if !float32Near(r, 10, 1e-7) || !float32Near(g, 20, 1e-7) || !float32Near(b, 30, 1e-7) {
+		t.Fatalf("expected RGB conversion path to preserve channels, got %.2f,%.2f,%.2f", r, g, b)
+	}
+	r, g, b = getRGB(colorValue, false)
+	if !float32Near(r, 10, 1e-7) || !float32Near(g, 20, 1e-7) || !float32Near(b, 30, 1e-7) {
+		t.Fatalf("expected non-convert RGB path to preserve color channels, got %.2f,%.2f,%.2f", r, g, b)
+	}
+}
+
 func TestEmbedTextValidation(t *testing.T) {
 	var embedder *Embedder
 	_, err := embedder.EmbedText("test")

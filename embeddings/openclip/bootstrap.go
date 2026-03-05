@@ -436,9 +436,18 @@ func ensureModelAssets(cfg bootstrapConfig) (ModelAssets, error) {
 		cfg.httpClient.CheckRedirect = makeRedirectPolicy(baseHost)
 	}
 
-	repoSlug := strings.ReplaceAll(cfg.repoID, "/", "--")
-	revisionSlug := strings.ReplaceAll(cfg.revision, "/", "--")
-	baseDir := filepath.Join(cfg.cacheDir, repoSlug, revisionSlug)
+	repoSlug, err := sanitizeBootstrapPathComponent(cfg.repoID, "repo ID")
+	if err != nil {
+		return ModelAssets{}, err
+	}
+	revisionSlug, err := sanitizeBootstrapPathComponent(cfg.revision, "revision")
+	if err != nil {
+		return ModelAssets{}, err
+	}
+	baseDir, err := resolveBootstrapBaseDir(cfg.cacheDir, repoSlug, revisionSlug)
+	if err != nil {
+		return ModelAssets{}, err
+	}
 	if err := os.MkdirAll(baseDir, 0o700); err != nil {
 		return ModelAssets{}, fmt.Errorf("failed to create bootstrap cache directory %q: %w", baseDir, err)
 	}
@@ -503,6 +512,14 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 	}
 
 	maxBytes := cfg.maxDownloadBytes
+	if expectedSize > maxBytes {
+		return fmt.Errorf(
+			"expected size for %s exceeds configured max download bytes: got %d, max %d",
+			fileName,
+			expectedSize,
+			maxBytes,
+		)
+	}
 	if expectedSize > 0 && expectedSize < maxBytes {
 		maxBytes = expectedSize
 	}
@@ -531,6 +548,47 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 		}
 	}
 	return nil
+}
+
+func sanitizeBootstrapPathComponent(value string, field string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("%s cannot be empty", strings.ToLower(field))
+	}
+
+	for _, segment := range strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("invalid %s %q: path traversal components are not allowed", field, value)
+		}
+	}
+
+	replaced := strings.ReplaceAll(trimmed, "/", "--")
+	replaced = strings.ReplaceAll(replaced, "\\", "--")
+	replaced = strings.ReplaceAll(replaced, string(filepath.Separator), "--")
+	return replaced, nil
+}
+
+func resolveBootstrapBaseDir(cacheDir string, repoSlug string, revisionSlug string) (string, error) {
+	absCacheDir, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path for cache directory %q: %w", cacheDir, err)
+	}
+	baseDir := filepath.Join(absCacheDir, repoSlug, revisionSlug)
+	absBaseDir, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path for bootstrap cache directory %q: %w", baseDir, err)
+	}
+
+	rel, err := filepath.Rel(absCacheDir, absBaseDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate bootstrap cache path %q: %w", absBaseDir, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("bootstrap cache directory %q escapes cache root %q", absBaseDir, absCacheDir)
+	}
+	return absBaseDir, nil
 }
 
 func downloadFileWithRetry(client *http.Client, assetURL string, destinationPath string, hfToken string, maxBytes int64, expectedSize int64) error {

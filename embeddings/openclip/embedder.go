@@ -859,11 +859,7 @@ func (e *Embedder) preprocessImagesInto(images []image.Image, pixelValues []floa
 }
 
 func getRGB(c color.Color, convertRGB bool) (float32, float32, float32) {
-	if !convertRGB {
-		gray := color.GrayModel.Convert(c).(color.Gray)
-		v := float32(gray.Y)
-		return v, v, v
-	}
+	_ = convertRGB
 	rgba := color.NRGBAModel.Convert(c).(color.NRGBA)
 	return float32(rgba.R), float32(rgba.G), float32(rgba.B)
 }
