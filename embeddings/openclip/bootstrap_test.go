@@ -97,6 +97,91 @@ func TestEnsureModelAssetsDownloadsAndCaches(t *testing.T) {
 	}
 }
 
+func TestDefaultBootstrapConfigSkipsTestEnvVar(t *testing.T) {
+	t.Setenv("ONNXRUNTIME_OPENCLIP_CACHE_DIR", t.TempDir())
+	t.Setenv("ONNXRUNTIME_TEST_MODEL_CACHE_DIR", t.TempDir())
+
+	cfg, err := defaultBootstrapConfig()
+	if err != nil {
+		t.Fatalf("defaultBootstrapConfig failed: %v", err)
+	}
+	if cfg.cacheDir != os.Getenv("ONNXRUNTIME_OPENCLIP_CACHE_DIR") {
+		t.Fatalf("expected production cache env var to win, got %q", cfg.cacheDir)
+	}
+}
+
+func TestEnsureModelAssetsEscapesRepoIDAndRevisionInURL(t *testing.T) {
+	repoID := "owner/repo?token"
+	revision := "branch/with space"
+	assetData := map[string][]byte{
+		textModelFileName:    []byte("text-onnx"),
+		visionModelFileName:  []byte("vision-onnx"),
+		tokenizerFileName:    []byte(`{"type":"tokenizer"}`),
+		preprocessorFileName: []byte(`{"size":224,"crop_size":224}`),
+	}
+
+	escapedRepoID := escapeRepoIDForURL(repoID)
+	escapedRevision := url.PathEscape(revision)
+	expectedPrefix := "/" + escapedRepoID + "/resolve/" + escapedRevision + "/"
+
+	var mu sync.Mutex
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+
+		if r.URL.EscapedPath() == "" || !strings.HasPrefix(r.URL.EscapedPath(), expectedPrefix) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.RawQuery != "" {
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+			return
+		}
+		fileName := r.URL.EscapedPath()[len(expectedPrefix):]
+		payload, ok := assetData[fileName]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	shaByFile := map[string]string{}
+	sizeByFile := map[string]int64{}
+	for fileName, data := range assetData {
+		shaByFile[fileName] = sha256Hex(data)
+		sizeByFile[fileName] = int64(len(data))
+	}
+
+	cfg := bootstrapConfig{
+		repoID:             repoID,
+		revision:           revision,
+		baseURL:            server.URL,
+		cacheDir:           tempDir,
+		verifySHA:          true,
+		shaByFile:          shaByFile,
+		expectedSizeByFile: sizeByFile,
+		maxDownloadBytes:   1024 * 1024,
+		httpClient: &http.Client{
+			Transport: http.DefaultTransport,
+		},
+	}
+
+	if _, err := ensureModelAssets(cfg); err != nil {
+		t.Fatalf("ensureModelAssets failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requestCount != len(bootstrapAssetSpecs) {
+		t.Fatalf("expected %d requests, got %d", len(bootstrapAssetSpecs), requestCount)
+	}
+}
+
 func TestEnsureAssetFileReplacesCorruptFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("good-content"))

@@ -240,9 +240,6 @@ func EnsureDefaultAssets(opts ...BootstrapOption) (ModelAssets, error) {
 func defaultBootstrapConfig() (bootstrapConfig, error) {
 	cacheDir := strings.TrimSpace(os.Getenv("ONNXRUNTIME_OPENCLIP_CACHE_DIR"))
 	if cacheDir == "" {
-		cacheDir = strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_MODEL_CACHE_DIR"))
-	}
-	if cacheDir == "" {
 		userCacheDir, err := os.UserCacheDir()
 		if err != nil {
 			return bootstrapConfig{}, fmt.Errorf("cannot determine user cache directory: %w", err)
@@ -527,11 +524,13 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 		return fmt.Errorf("invalid max download limit for %s: %d", fileName, maxBytes)
 	}
 
+	escapedRepoID := escapeRepoIDForURL(cfg.repoID)
+	escapedRevision := url.PathEscape(cfg.revision)
 	assetURL := fmt.Sprintf(
 		"%s/%s/resolve/%s/%s",
 		strings.TrimRight(cfg.baseURL, "/"),
-		cfg.repoID,
-		cfg.revision,
+		escapedRepoID,
+		escapedRevision,
 		fileName,
 	)
 
@@ -548,6 +547,14 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 		}
 	}
 	return nil
+}
+
+func escapeRepoIDForURL(repoID string) string {
+	repoSegments := strings.Split(repoID, "/")
+	for i, segment := range repoSegments {
+		repoSegments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(repoSegments, "/")
 }
 
 func sanitizeBootstrapPathComponent(value string, field string) (string, error) {
