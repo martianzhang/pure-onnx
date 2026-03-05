@@ -2,10 +2,12 @@ package openclip
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,16 +44,14 @@ const (
 )
 
 const (
-	textModelFileName   = "text_model.onnx"
-	visionModelFileName = "vision_model.onnx"
-	// #nosec G101 -- fixed artifact file name, not credential material.
-	tokenizerFileName = "tokenizer.json"
-	// #nosec G101 -- fixed artifact file name, not credential material.
+	textModelFileName    = "text_model.onnx"
+	visionModelFileName  = "vision_model.onnx"
+	tokenizerFileName    = "tokenizer.json"
 	preprocessorFileName = "preprocessor_config.json"
 )
 
 const (
-	defaultMaxDownloadBytes int64         = 1 << 30 // 1 GiB cap for unpinned/custom bundles.
+	defaultMaxDownloadBytes int64         = 1 << 30 // 1 GiB cap for each downloaded file.
 	defaultLockWaitTimeout  time.Duration = 30 * time.Second
 	defaultLockStaleAfter   time.Duration = 10 * time.Minute
 	defaultHTTPTimeout      time.Duration = 60 * time.Second
@@ -231,7 +231,9 @@ func EnsureDefaultAssets(opts ...BootstrapOption) (ModelAssets, error) {
 	if err := validateIntegrityConfig(cfg); err != nil {
 		return ModelAssets{}, err
 	}
-	ensureHTTPClientSecurity(&cfg)
+	if err := ensureHTTPClientSecurity(&cfg); err != nil {
+		return ModelAssets{}, err
+	}
 	return ensureModelAssets(cfg)
 }
 
@@ -271,16 +273,31 @@ func applyDefaultBundleIntegrity(cfg *bootstrapConfig) {
 	if cfg.repoID != DefaultBootstrapRepoID || cfg.revision != DefaultBootstrapRevision {
 		return
 	}
+	if _, ok := cfg.shaByFile[textModelFileName]; !ok {
+		cfg.shaByFile[textModelFileName] = defaultTextModelSHA256
+	}
+	if _, ok := cfg.shaByFile[visionModelFileName]; !ok {
+		cfg.shaByFile[visionModelFileName] = defaultVisionSHA256
+	}
+	if _, ok := cfg.shaByFile[tokenizerFileName]; !ok {
+		cfg.shaByFile[tokenizerFileName] = defaultTokenizerSHA256
+	}
+	if _, ok := cfg.shaByFile[preprocessorFileName]; !ok {
+		cfg.shaByFile[preprocessorFileName] = defaultPreprocSHA256
+	}
 
-	cfg.shaByFile[textModelFileName] = defaultTextModelSHA256
-	cfg.shaByFile[visionModelFileName] = defaultVisionSHA256
-	cfg.shaByFile[tokenizerFileName] = defaultTokenizerSHA256
-	cfg.shaByFile[preprocessorFileName] = defaultPreprocSHA256
-
-	cfg.expectedSizeByFile[textModelFileName] = defaultTextModelSize
-	cfg.expectedSizeByFile[visionModelFileName] = defaultVisionModelSize
-	cfg.expectedSizeByFile[tokenizerFileName] = defaultTokenizerSize
-	cfg.expectedSizeByFile[preprocessorFileName] = defaultPreprocessorSize
+	if _, ok := cfg.expectedSizeByFile[textModelFileName]; !ok {
+		cfg.expectedSizeByFile[textModelFileName] = defaultTextModelSize
+	}
+	if _, ok := cfg.expectedSizeByFile[visionModelFileName]; !ok {
+		cfg.expectedSizeByFile[visionModelFileName] = defaultVisionModelSize
+	}
+	if _, ok := cfg.expectedSizeByFile[tokenizerFileName]; !ok {
+		cfg.expectedSizeByFile[tokenizerFileName] = defaultTokenizerSize
+	}
+	if _, ok := cfg.expectedSizeByFile[preprocessorFileName]; !ok {
+		cfg.expectedSizeByFile[preprocessorFileName] = defaultPreprocessorSize
+	}
 }
 
 func validateIntegrityConfig(cfg bootstrapConfig) error {
@@ -303,29 +320,52 @@ func validateIntegrityConfig(cfg bootstrapConfig) error {
 	return nil
 }
 
-func ensureHTTPClientSecurity(cfg *bootstrapConfig) {
+func ensureHTTPClientSecurity(cfg *bootstrapConfig) error {
 	if cfg == nil {
-		return
+		return nil
+	}
+
+	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
+	if err != nil {
+		return err
 	}
 	if cfg.httpClient == nil {
 		cfg.httpClient = &http.Client{
 			Timeout:       defaultHTTPTimeout,
-			CheckRedirect: makeRedirectPolicy(cfg.baseURL),
+			CheckRedirect: makeRedirectPolicy(baseHost),
 		}
-		return
+		return nil
 	}
 	if cfg.httpClient.Timeout <= 0 {
 		cfg.httpClient.Timeout = defaultHTTPTimeout
 	}
 	if cfg.httpClient.CheckRedirect == nil {
-		cfg.httpClient.CheckRedirect = makeRedirectPolicy(cfg.baseURL)
+		cfg.httpClient.CheckRedirect = makeRedirectPolicy(baseHost)
 	}
+	return nil
 }
 
-func makeRedirectPolicy(baseURL string) func(req *http.Request, via []*http.Request) error {
-	baseHost := ""
-	if parsed, err := url.Parse(strings.TrimSpace(baseURL)); err == nil {
-		baseHost = strings.ToLower(parsed.Hostname())
+func parseBootstrapBaseHost(baseURL string, requireHTTPS bool) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid bootstrap base URL %q: %w", baseURL, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("bootstrap base URL must include scheme and host, got %q", baseURL)
+	}
+	if requireHTTPS && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("bootstrap base URL must use HTTPS, got %q", baseURL)
+	}
+	return strings.ToLower(parsed.Hostname()), nil
+}
+
+func makeRedirectPolicy(baseHost string) func(req *http.Request, via []*http.Request) error {
+	base := strings.ToLower(strings.TrimSpace(baseHost))
+	if base == "" {
+		return func(_ *http.Request, _ []*http.Request) error {
+			return fmt.Errorf("bootstrap redirect policy unavailable: missing allowed base host")
+		}
 	}
 	return func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {
@@ -381,11 +421,19 @@ func ensureModelAssets(cfg bootstrapConfig) (ModelAssets, error) {
 	if cfg.maxDownloadBytes <= 0 {
 		return ModelAssets{}, fmt.Errorf("max download bytes must be > 0, got %d", cfg.maxDownloadBytes)
 	}
+	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
+	if err != nil {
+		return ModelAssets{}, err
+	}
 	if cfg.httpClient == nil {
 		cfg.httpClient = &http.Client{
 			Timeout:       defaultHTTPTimeout,
-			CheckRedirect: makeRedirectPolicy(cfg.baseURL),
+			CheckRedirect: makeRedirectPolicy(baseHost),
 		}
+	}
+	if cfg.httpClient.CheckRedirect == nil {
+		cfg.httpClient.CheckRedirect = makeRedirectPolicy(baseHost)
 	}
 
 	repoSlug := strings.ReplaceAll(cfg.repoID, "/", "--")
@@ -430,21 +478,27 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 		}
 	}()
 
+	staleReason := ""
+	hasSizeMismatch := false
 	if info, statErr := os.Stat(destinationPath); statErr == nil {
 		switch {
 		case expectedSize > 0 && info.Size() != expectedSize:
-			if removeErr := os.Remove(destinationPath); removeErr != nil {
-				return fmt.Errorf("failed to remove stale %s after size mismatch: %w", fileName, removeErr)
-			}
+			hasSizeMismatch = true
+			staleReason = fmt.Sprintf("cached file %s has unexpected size: got %d bytes, want %d bytes", fileName, info.Size(), expectedSize)
 		case cfg.verifySHA && expectedSHA256 != "":
-			if verifyErr := verifyFileSHA256(destinationPath, expectedSHA256); verifyErr == nil {
-				return nil
+			if verifyErr := verifyFileSHA256(destinationPath, expectedSHA256); verifyErr != nil {
+				staleReason = fmt.Sprintf("cached file %s failed checksum check: %v", fileName, verifyErr)
+				break
 			}
-			if removeErr := os.Remove(destinationPath); removeErr != nil {
-				return fmt.Errorf("failed to remove stale %s after checksum mismatch: %w", fileName, removeErr)
-			}
+			return nil
 		default:
 			return nil
+		}
+		if removeErr := os.Remove(destinationPath); removeErr != nil {
+			if hasSizeMismatch {
+				return fmt.Errorf("failed to remove stale %s after size mismatch: %w", fileName, removeErr)
+			}
+			return fmt.Errorf("failed to remove stale %s after checksum mismatch: %w", fileName, removeErr)
 		}
 	}
 
@@ -465,6 +519,9 @@ func ensureAssetFile(cfg bootstrapConfig, destinationPath string, fileName strin
 	)
 
 	if err := downloadFileWithRetry(cfg.httpClient, assetURL, destinationPath, cfg.hfToken, maxBytes, expectedSize); err != nil {
+		if staleReason != "" {
+			return fmt.Errorf("%s; download failed: %w", staleReason, err)
+		}
 		return fmt.Errorf("failed to download %s: %w", fileName, err)
 	}
 	if cfg.verifySHA && expectedSHA256 != "" {
@@ -535,8 +592,13 @@ func downloadFileOnce(client *http.Client, assetURL string, destinationPath stri
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
+	// Keep explicit close for the file because Windows rename on an open
+	// handle is fragile; this closure does not perform a second close.
+	var closed bool
 	defer func() {
-		_ = file.Close()
+		if !closed {
+			_ = file.Close()
+		}
 		if err != nil {
 			_ = os.Remove(tempPath)
 		}
@@ -560,6 +622,7 @@ func downloadFileOnce(client *http.Client, assetURL string, destinationPath stri
 	if err = file.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
+	closed = true
 	if err = os.Rename(tempPath, destinationPath); err != nil {
 		return fmt.Errorf("failed to move temp file into place: %w", err)
 	}
@@ -569,12 +632,45 @@ func downloadFileOnce(client *http.Client, assetURL string, destinationPath stri
 func isRetryableDownloadError(err error) bool {
 	statusErr := (*downloadStatusError)(nil)
 	if !errors.As(err, &statusErr) {
+		urlErr := (*url.Error)(nil)
+		if errors.As(err, &urlErr) {
+			var netErr net.Error
+			if errors.As(urlErr.Err, &netErr) && netErr.Timeout() {
+				return true
+			}
+			if errors.Is(urlErr.Err, io.EOF) {
+				return true
+			}
+			if isTransientURLSubError(urlErr.Err) {
+				return true
+			}
+			return false
+		}
 		return false
 	}
 	if statusErr.StatusCode == http.StatusRequestTimeout || statusErr.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
 	return statusErr.StatusCode >= 500 && statusErr.StatusCode <= 599
+}
+
+func isTransientURLSubError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "connection refused"):
+		return true
+	case strings.Contains(lower, "connection reset by peer"):
+		return true
+	case strings.Contains(lower, "i/o timeout"):
+		return true
+	case strings.Contains(lower, "timed out"):
+		return true
+	default:
+		return false
+	}
 }
 
 func acquireFileLock(lockPath string, waitTimeout time.Duration, staleAfter time.Duration) (*fileLock, error) {
@@ -598,7 +694,9 @@ func acquireFileLock(lockPath string, waitTimeout time.Duration, staleAfter time
 		if staleAfter > 0 {
 			if info, statErr := os.Stat(lockPath); statErr == nil {
 				if time.Since(info.ModTime()) > staleAfter {
-					_ = os.Remove(lockPath)
+					if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+						return nil, fmt.Errorf("failed to clean stale lock %q: %w", lockPath, err)
+					}
 					continue
 				}
 			}
@@ -663,13 +761,5 @@ func validateAssetFileName(fileName string) error {
 }
 
 func equalBytes(a []byte, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return subtle.ConstantTimeCompare(a, b) == 1
 }

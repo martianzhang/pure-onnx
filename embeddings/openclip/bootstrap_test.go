@@ -3,6 +3,7 @@ package openclip
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -144,6 +145,84 @@ func TestDownloadFileOnceRejectsOversizeByContentLength(t *testing.T) {
 	}
 }
 
+func TestDownloadFileOnceRejectsOversizeWithoutContentLength(t *testing.T) {
+	payload := strings.Repeat("x", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("response writer must support flush")
+		}
+		for i := 0; i < len(payload); i++ {
+			_, _ = w.Write([]byte{payload[i]})
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	destination := filepath.Join(t.TempDir(), "asset.bin")
+	err := downloadFileOnce(&http.Client{}, server.URL+"/asset.bin", destination, "", 32, 0)
+	if err == nil || !strings.Contains(err.Error(), "download exceeded max allowed size") {
+		t.Fatalf("expected streamed max-bytes error, got: %v", err)
+	}
+}
+
+func TestDownloadFileWithRetryRetryableHTTPStatus(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporary error", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	destination := filepath.Join(t.TempDir(), "asset.bin")
+	err := downloadFileWithRetry(
+		&http.Client{},
+		server.URL+"/asset.bin",
+		destination,
+		"",
+		16,
+		2,
+	)
+	if err != nil {
+		t.Fatalf("downloadFileWithRetry failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts for retryable status, got %d", attempts)
+	}
+	assertFileContains(t, destination, []byte("ok"))
+}
+
+func TestDownloadFileWithRetryDoesNotRetryClientError(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	destination := filepath.Join(t.TempDir(), "asset.bin")
+	err := downloadFileWithRetry(
+		&http.Client{},
+		server.URL+"/asset.bin",
+		destination,
+		"",
+		16,
+		0,
+	)
+	if err == nil {
+		t.Fatalf("expected download to fail for 400")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected no retry for non-retryable status, got %d", attempts)
+	}
+}
+
 func TestAcquireFileLockTimeout(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "asset.lock")
 	first, err := acquireFileLock(lockPath, time.Second, time.Hour)
@@ -160,8 +239,69 @@ func TestAcquireFileLockTimeout(t *testing.T) {
 	}
 }
 
+func TestAcquireFileLockStaleCleanup(t *testing.T) {
+	tempDir := t.TempDir()
+	lockPath := filepath.Join(tempDir, "asset.lock")
+	if err := os.WriteFile(lockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("failed to seed stale lock: %v", err)
+	}
+	oldTime := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
+		t.Fatalf("failed to set stale lock mtime: %v", err)
+	}
+
+	lock, err := acquireFileLock(lockPath, time.Second, time.Millisecond*10)
+	if err != nil {
+		t.Fatalf("acquireFileLock stale cleanup failed: %v", err)
+	}
+	defer func() {
+		_ = lock.Release()
+	}()
+}
+
+func TestIsRetryableDownloadError(t *testing.T) {
+	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusRequestTimeout}) {
+		t.Fatalf("expected HTTP 408 to be retryable")
+	}
+	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusTooManyRequests}) {
+		t.Fatalf("expected HTTP 429 to be retryable")
+	}
+	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusInternalServerError}) {
+		t.Fatalf("expected HTTP 500 to be retryable")
+	}
+	if isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusBadRequest}) {
+		t.Fatalf("expected HTTP 400 to be non-retryable")
+	}
+}
+
+func TestIsRetryableDownloadErrorNetworkTransient(t *testing.T) {
+	if !isRetryableDownloadError(&url.Error{
+		Op:  "Get",
+		URL: "http://example.com",
+		Err: errors.New("connection refused"),
+	}) {
+		t.Fatalf("expected transient connection error to be retryable")
+	}
+
+	if isRetryableDownloadError(&url.Error{
+		Op:  "Get",
+		URL: "http://example.com",
+		Err: errors.New("no such host"),
+	}) {
+		t.Fatalf("expected DNS resolution error to be non-retryable")
+	}
+
+	if isRetryableDownloadError(&url.Error{
+		Op:  "Get",
+		URL: "http://example.com",
+		Err: errors.New("permission denied"),
+	}) {
+		t.Fatalf("expected unrelated URL error to be non-retryable")
+	}
+}
+
 func TestRedirectPolicyRejectsHTTPSDowngrade(t *testing.T) {
-	policy := makeRedirectPolicy(DefaultBootstrapBaseURL)
+	policy := makeRedirectPolicy("huggingface.co")
 	req := &http.Request{URL: mustParseURL(t, "http://example.com/file")}
 	via := []*http.Request{
 		{URL: mustParseURL(t, "https://huggingface.co/repo/resolve/main/file")},
@@ -181,21 +321,6 @@ func TestIsAllowedRedirectHost(t *testing.T) {
 	}
 	if !isAllowedRedirectHost("my.mirror.local", "cdn.my.mirror.local") {
 		t.Fatalf("expected subdomain of custom host to be allowed")
-	}
-}
-
-func TestIsRetryableDownloadError(t *testing.T) {
-	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusRequestTimeout}) {
-		t.Fatalf("expected HTTP 408 to be retryable")
-	}
-	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusTooManyRequests}) {
-		t.Fatalf("expected HTTP 429 to be retryable")
-	}
-	if !isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusInternalServerError}) {
-		t.Fatalf("expected HTTP 500 to be retryable")
-	}
-	if isRetryableDownloadError(&downloadStatusError{StatusCode: http.StatusBadRequest}) {
-		t.Fatalf("expected HTTP 400 to be non-retryable")
 	}
 }
 

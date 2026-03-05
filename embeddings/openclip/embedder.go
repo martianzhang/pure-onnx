@@ -230,6 +230,8 @@ type Embedder struct {
 }
 
 type textEmbeddingSession struct {
+	// inputIDs and attentionMask are tensor-backed backing stores. Do not
+	// reallocate, re-slice, or append after tensor creation.
 	inputIDs      []int64
 	attentionMask []int64
 
@@ -240,6 +242,8 @@ type textEmbeddingSession struct {
 }
 
 type visionEmbeddingSession struct {
+	// pixelValues is the tensor-backed backing store. Reallocation breaks
+	// tensor references created from the previous array.
 	pixelValues []float32
 
 	pixelValuesTensor *ort.Tensor[float32]
@@ -874,7 +878,7 @@ func resizeKeepingAspect(src image.Image, shortestEdge int) image.Image {
 	if width <= 0 || height <= 0 {
 		return src
 	}
-	if minInt(width, height) == shortestEdge {
+	if min(width, height) == shortestEdge {
 		return src
 	}
 
@@ -906,8 +910,8 @@ func centerCropImage(src image.Image, targetWidth int, targetHeight int) image.I
 		return src
 	}
 
-	cropWidth := minInt(targetWidth, srcWidth)
-	cropHeight := minInt(targetHeight, srcHeight)
+	cropWidth := min(targetWidth, srcWidth)
+	cropHeight := min(targetHeight, srcHeight)
 	srcStartX := srcBounds.Min.X + (srcWidth-cropWidth)/2
 	srcStartY := srcBounds.Min.Y + (srcHeight-cropHeight)/2
 
@@ -1145,13 +1149,6 @@ func parseSizeField(raw json.RawMessage) (int, error) {
 	}
 
 	return 0, fmt.Errorf("size object must include shortest_edge or height/width")
-}
-
-func minInt(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // CosineSimilarity returns cosine similarity between two vectors.
