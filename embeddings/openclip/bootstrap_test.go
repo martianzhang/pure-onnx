@@ -230,6 +230,35 @@ func TestEnsureAssetFileReplacesCorruptFile(t *testing.T) {
 	assertFileContains(t, destination, []byte("good-content"))
 }
 
+func TestEnsureAssetFileRejectsDownloadedChecksumMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("bad-content"))
+	}))
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	destination := filepath.Join(tempDir, textModelFileName)
+	cfg := bootstrapConfig{
+		repoID:             "repo/test",
+		revision:           "main",
+		baseURL:            server.URL,
+		cacheDir:           tempDir,
+		verifySHA:          true,
+		shaByFile:          map[string]string{textModelFileName: "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},
+		expectedSizeByFile: map[string]int64{textModelFileName: int64(len("bad-content"))},
+		maxDownloadBytes:   defaultMaxDownloadBytes,
+		httpClient:         &http.Client{Transport: http.DefaultTransport},
+	}
+
+	err := ensureAssetFile(cfg, destination, textModelFileName, cfg.shaByFile[textModelFileName], cfg.expectedSizeByFile[textModelFileName])
+	if err == nil || !strings.Contains(err.Error(), "downloaded text_model.onnx failed checksum verification") {
+		t.Fatalf("expected checksum verification failure, got: %v", err)
+	}
+	if _, err := os.Stat(destination); err == nil {
+		t.Fatalf("expected file to be removed after checksum mismatch")
+	}
+}
+
 func TestEnsureAssetFileRejectsEmptyCachedFileWithoutVerification(t *testing.T) {
 	tempDir := t.TempDir()
 	destination := filepath.Join(tempDir, textModelFileName)
