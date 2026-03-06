@@ -219,6 +219,79 @@ func main() {
 }
 ```
 
+### Optional OpenCLIP Embeddings Layer (`embeddings/openclip`)
+
+For local CLIP text + image embeddings, use:
+`github.com/amikos-tech/pure-onnx/embeddings/openclip`.
+
+Expected artifacts from the OpenCLIP export tooling:
+- `text_model.onnx`
+- `vision_model.onnx`
+- `tokenizer.json`
+- `preprocessor_config.json`
+
+Defaults are aligned with the pinned OpenCLIP export contract:
+- text inputs: `input_ids`, `attention_mask`; output: `text_embeds`
+- vision input: `pixel_values`; output: `image_embeds`
+- sequence length `77`, image size `224`, embedding width `512`
+- L2 normalization enabled by default (toggle with `WithoutL2Normalization()`)
+- per-modality LRU session cache (default `8` per modality, configurable)
+
+Built-in bootstrap can download and cache the default model bundle:
+- repo: `amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx`
+- revision: `248a2ed76a7189fc080e654e36930171331ef085`
+- cache directory env var: `ONNXRUNTIME_OPENCLIP_CACHE_DIR` (defaults to user cache, e.g. `~/.cache/onnx-purego/openclip`)
+- optional auth token env var: `HF_TOKEN` (adds Hugging Face bearer token for gated/private downloads)
+
+When `HF_TOKEN` is set, downloads require `https://` base URLs to avoid leaking credentials.
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/amikos-tech/pure-onnx/embeddings/openclip"
+    "github.com/amikos-tech/pure-onnx/ort"
+)
+
+func main() {
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil {
+        log.Fatal(err)
+    }
+    if err := ort.InitializeEnvironment(); err != nil {
+        log.Fatal(err)
+    }
+    defer ort.DestroyEnvironment()
+
+    assets, err := openclip.EnsureDefaultAssets()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    embedder, err := openclip.NewEmbedder(
+        assets.TextModelPath,
+        assets.VisionModelPath,
+        assets.TokenizerPath,
+        assets.PreprocessorConfigPath,
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer embedder.Close()
+
+    textEmbeds, err := embedder.EmbedTexts([]string{"a photo of a cat", "a photo of a dog"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = textEmbeds // [][]float32
+}
+```
+
+Similarity helpers are also available:
+- `openclip.CosineSimilarity(a, b)`
+- `openclip.CLIPSimilarityLogits(imageEmbeddings, textEmbeddings, openclip.DefaultCLIPLogitScale)`
+
 ### OpenCLIP ONNX Export Tooling (`tools/openclip_export_onnx.py`)
 
 To generate pinned OpenCLIP ONNX artifacts (split text + vision encoders):
