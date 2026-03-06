@@ -1,0 +1,3 @@
+{"id":"c1","text":"a photo of a cat","image":{"kind":"solid","width":224,"height":224,"color":[220,220,220]}}
+{"id":"c2","text":"a photo of a dog","image":{"kind":"solid","width":224,"height":224,"color":[40,40,40]}}
+{"id":"c3","text":"a red and blue checkerboard pattern","image":{"kind":"checkerboard","width":224,"height":224,"block_size":16,"color_a":[230,30,30],"color_b":[30,30,230]}}

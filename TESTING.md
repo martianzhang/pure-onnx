@@ -89,11 +89,32 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    # export ONNXRUNTIME_TEST_SPLADE_TOKEN_TYPE_IDS_NAME=segment_ids
    ```
 
-6. Run tests:
+6. Optional: configure OpenCLIP integration test settings:
+   ```bash
+   # Optional local overrides for all 4 OpenCLIP assets.
+   # Either set all 4 *_PATH vars together or set none and use bootstrap fallback.
+   export ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_PATH=/path/to/text_model.onnx
+   export ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_PATH=/path/to/vision_model.onnx
+   export ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_PATH=/path/to/tokenizer.json
+   export ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_PATH=/path/to/preprocessor_config.json
+
+   # Optional checksum validation for explicit *_PATH overrides:
+   # export ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256=<expected_sha256>
+   # export ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256=<expected_sha256>
+   # export ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256=<expected_sha256>
+   # export ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256=<expected_sha256>
+   ```
+
+   OpenCLIP integration tests default to bootstrap download of the pinned bundle:
+   `amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx@248a2ed76a7189fc080e654e36930171331ef085`.
+   They reuse `ONNXRUNTIME_TEST_MODEL_CACHE_DIR` when set (cache subdirectory: `openclip`).
+
+7. Run tests:
    ```bash
    go test -v ./ort/...
    go test -v ./embeddings/minilm
    go test -v ./embeddings/splade
+   go test -v ./embeddings/openclip
    ```
 
 #### Integration Test Coverage
@@ -105,6 +126,11 @@ When `ONNXRUNTIME_LIB_PATH` is set, the following additional tests run:
 - `TestEmbedDocumentsWithSPLADEModel`: Runs sparse embedding end-to-end through `embeddings/splade` when SPLADE env vars are set
 - `TestSPLADEGoldenRegressionTopK16WithLabels`: Verifies pinned `prithivida/Splade_PP_en_v1` outputs against a golden sparse vector set (indices/values/labels)
 - `TestSPLADERepeatabilityTopK16`: Re-runs SPLADE inference and asserts stable outputs across repeated calls
+- `TestEmbedTextsAndImagesWithOpenCLIPModel`: Runs text+vision embedding end-to-end through `embeddings/openclip` with pinned OpenCLIP assets
+- `TestOpenCLIPFailsWithWrongInputOutputNames`: Validates text model I/O contract mismatch diagnostics
+- `TestOpenCLIPFailsWithWrongEmbeddingDimension`: Validates output-shape mismatch diagnostics
+- `TestOpenCLIPFailsWithImageSizeMismatch`: Validates vision model shape mismatch diagnostics
+- `TestOpenCLIPGoldenDatasetParity`: Compares OpenCLIP embedding prefixes + similarity logits against hosted golden JSONL rows
 - Tests all FFI interactions including:
   - Dynamic library loading
   - Symbol resolution
@@ -180,6 +206,31 @@ python3 ./tools/splade_generate_golden.py \
   --top-k 24
 ```
 
+Run OpenCLIP golden-dataset parity check (optional):
+```bash
+export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
+export HF_DATASET_REPO=tazarov/pure-onnx
+# Optional for private/gated dataset access only:
+# export HF_TOKEN=<hf_token_with_dataset_read_access>
+# Optional direct override:
+# export ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_JSONL_URL=https://huggingface.co/datasets/tazarov/pure-onnx/resolve/main/openclip_endpoint_golden/v1/openclip_vit_b_32_laion2b_s34b_b79k_prefix64_v1.jsonl
+# Optional tolerance override (default 1e-4):
+# export ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_TOLERANCE=0.0001
+
+go test -v ./embeddings/openclip -run TestOpenCLIPGoldenDatasetParity -count=1
+```
+
+Generate an OpenCLIP golden dataset locally (no hosted endpoint required):
+```bash
+python3 ./tools/openclip_generate_golden.py \
+  --cases-jsonl ./tools/openclip_golden_cases_v1.jsonl \
+  --output-jsonl ./openclip_endpoint_golden/v1/openclip_vit_b_32_laion2b_s34b_b79k_prefix64_v1.jsonl \
+  --metadata-path ./openclip_endpoint_golden/v1/metadata.json \
+  --model-name laion/CLIP-ViT-B-32-laion2B-s34B-b79K \
+  --revision 1a25a446712ba5ee05982a381eed697ef9b435cf \
+  --prefix-length 64
+```
+
 ## Continuous Integration
 
 ### GitHub Actions
@@ -187,7 +238,7 @@ python3 ./tools/splade_generate_golden.py \
 The CI pipeline runs tests in multiple configurations:
 - **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.24.x
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
-- **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration (`prithivida/Splade_PP_en_v1` defaults), and runs all-MiniLM benchmarks
+- **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration and hosted parity, runs OpenCLIP integration and hosted parity, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
 - **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.24.13+auto`)
 

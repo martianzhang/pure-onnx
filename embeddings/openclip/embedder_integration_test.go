@@ -4,45 +4,22 @@ import (
 	"image"
 	"image/color"
 	"math"
-	"os"
 	"strings"
 	"testing"
-
-	"github.com/amikos-tech/pure-onnx/ort"
 )
 
 func TestEmbedTextsAndImagesWithOpenCLIPModel(t *testing.T) {
 	cleanup := setupORTTestEnvironment(t)
 	defer cleanup()
 
-	textModelPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_PATH")
-	visionModelPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_PATH")
-	tokenizerPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_PATH")
-	preprocessorPath := os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_PATH")
-	if textModelPath == "" || visionModelPath == "" || tokenizerPath == "" || preprocessorPath == "" {
-		opts := []BootstrapOption{}
-		if cacheDir := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_MODEL_CACHE_DIR")); cacheDir != "" {
-			opts = append(opts, WithBootstrapCacheDir(cacheDir))
-		}
-		if token := strings.TrimSpace(os.Getenv("HF_TOKEN")); token != "" {
-			opts = append(opts, WithBootstrapToken(token))
-		}
-		assets, err := EnsureDefaultAssets(opts...)
-		if err != nil {
-			t.Fatalf(
-				"failed to bootstrap default OpenCLIP assets (%s@%s): %v",
-				DefaultBootstrapRepoID,
-				DefaultBootstrapRevision,
-				err,
-			)
-		}
-		textModelPath = assets.TextModelPath
-		visionModelPath = assets.VisionModelPath
-		tokenizerPath = assets.TokenizerPath
-		preprocessorPath = assets.PreprocessorConfigPath
-	}
+	assets := resolveOpenCLIPAssets(t)
 
-	embedder, err := NewEmbedder(textModelPath, visionModelPath, tokenizerPath, preprocessorPath)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+	)
 	if err != nil {
 		t.Fatalf("failed to create openclip embedder: %v", err)
 	}
@@ -107,36 +84,102 @@ func TestEmbedTextsAndImagesWithOpenCLIPModel(t *testing.T) {
 	}
 }
 
-func setupORTTestEnvironment(tb testing.TB) func() {
-	tb.Helper()
+func TestOpenCLIPFailsWithWrongInputOutputNames(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
 
-	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
-	if libPath == "" {
-		tb.Skip("ONNXRUNTIME_LIB_PATH not set, skipping integration test")
+	assets := resolveOpenCLIPAssets(t)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+		WithTextInputOutputNames("bad_input_ids", "bad_attention_mask", "bad_text_output"),
+	)
+	if err != nil {
+		t.Fatalf("failed to create openclip embedder: %v", err)
 	}
-
-	if err := ort.SetSharedLibraryPath(libPath); err != nil {
-		tb.Fatalf("failed to set ONNX Runtime library path: %v", err)
-	}
-	if err := ort.InitializeEnvironment(); err != nil {
-		tb.Fatalf("failed to initialize ONNX Runtime: %v", err)
-	}
-
-	return func() {
-		if err := ort.DestroyEnvironment(); err != nil {
-			tb.Errorf("failed to destroy ONNX Runtime environment: %v", err)
+	defer func() {
+		if closeErr := embedder.Close(); closeErr != nil {
+			t.Errorf("failed to close openclip embedder: %v", closeErr)
 		}
+	}()
+
+	_, err = embedder.EmbedTexts([]string{"a photo of a cat"})
+	if err == nil {
+		t.Fatalf("expected text inference to fail with incorrect text input/output names")
 	}
+	assertErrorContainsAny(
+		t,
+		err,
+		[]string{"text embedding inference failed", "input", "output", "name", "bad_input_ids", "bad_text_output"},
+	)
 }
 
-func solidImage(width int, height int, c color.NRGBA) image.Image {
-	img := image.NewNRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			img.SetNRGBA(x, y, c)
-		}
+func TestOpenCLIPFailsWithWrongEmbeddingDimension(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	assets := resolveOpenCLIPAssets(t)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+		WithEmbeddingDimension(OutputEmbeddingDimension+1),
+	)
+	if err != nil {
+		t.Fatalf("failed to create openclip embedder: %v", err)
 	}
-	return img
+	defer func() {
+		if closeErr := embedder.Close(); closeErr != nil {
+			t.Errorf("failed to close openclip embedder: %v", closeErr)
+		}
+	}()
+
+	_, err = embedder.EmbedTexts([]string{"a photo of a cat"})
+	if err == nil {
+		t.Fatalf("expected text inference to fail with incompatible embedding dimension")
+	}
+	assertErrorContainsAny(
+		t,
+		err,
+		[]string{"text embedding inference failed", "shape", "dimension", "mismatch", "text output length mismatch"},
+	)
+}
+
+func TestOpenCLIPFailsWithImageSizeMismatch(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	assets := resolveOpenCLIPAssets(t)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+		WithImageSize(256),
+	)
+	if err != nil {
+		t.Fatalf("failed to create openclip embedder: %v", err)
+	}
+	defer func() {
+		if closeErr := embedder.Close(); closeErr != nil {
+			t.Errorf("failed to close openclip embedder: %v", closeErr)
+		}
+	}()
+
+	_, err = embedder.EmbedImages([]image.Image{
+		solidImage(256, 256, color.NRGBA{R: 64, G: 64, B: 64, A: 255}),
+	})
+	if err == nil {
+		t.Fatalf("expected image inference to fail with forced non-default image size")
+	}
+	assertErrorContainsAny(
+		t,
+		err,
+		[]string{"vision embedding inference failed", "shape", "dimension", "pixel_values", "mismatch"},
+	)
 }
 
 func assertApproxUnitNormIntegration(t *testing.T, label string, values []float32, epsilon float64) {
@@ -158,4 +201,18 @@ func assertFiniteVector(t *testing.T, label string, values []float32) {
 			t.Fatalf("%s has non-finite value at index %d: %f", label, i, value)
 		}
 	}
+}
+
+func assertErrorContainsAny(t *testing.T, err error, fragments []string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	got := strings.ToLower(err.Error())
+	for _, fragment := range fragments {
+		if strings.Contains(got, strings.ToLower(fragment)) {
+			return
+		}
+	}
+	t.Fatalf("error %q did not contain any of expected fragments: %v", err.Error(), fragments)
 }
