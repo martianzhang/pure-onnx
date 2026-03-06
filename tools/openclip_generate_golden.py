@@ -165,8 +165,8 @@ def validate_image_recipe(recipe: dict[str, object], line_number: int) -> None:
     kind = str(recipe.get("kind", "solid")).strip().lower()
 
     if kind == "solid":
-        width = int(recipe.get("width", 0))
-        height = int(recipe.get("height", 0))
+        width = parse_recipe_int(recipe, "width", 0, line_number)
+        height = parse_recipe_int(recipe, "height", 0, line_number)
         if width <= 0 or height <= 0:
             raise ValueError(
                 f"line {line_number}: image width/height must be > 0, got {width}x{height}"
@@ -174,15 +174,15 @@ def validate_image_recipe(recipe: dict[str, object], line_number: int) -> None:
         parse_rgb(recipe.get("color"), "color", line_number)
         return
     if kind == "checkerboard":
-        width = int(recipe.get("width", 0))
-        height = int(recipe.get("height", 0))
+        width = parse_recipe_int(recipe, "width", 0, line_number)
+        height = parse_recipe_int(recipe, "height", 0, line_number)
         if width <= 0 or height <= 0:
             raise ValueError(
                 f"line {line_number}: image width/height must be > 0, got {width}x{height}"
             )
         parse_rgb(recipe.get("color_a"), "color_a", line_number)
         parse_rgb(recipe.get("color_b"), "color_b", line_number)
-        block_size = int(recipe.get("block_size", 0))
+        block_size = parse_recipe_int(recipe, "block_size", 0, line_number)
         if block_size <= 0:
             raise ValueError(
                 f"line {line_number}: checkerboard block_size must be > 0, got {block_size}"
@@ -200,17 +200,19 @@ def validate_image_recipe(recipe: dict[str, object], line_number: int) -> None:
             raise ValueError(f"line {line_number}: hf_dataset_image requires non-empty dataset")
         if not split:
             raise ValueError(f"line {line_number}: hf_dataset_image requires non-empty split")
-        try:
-            index = int(recipe.get("index", -1))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"line {line_number}: hf_dataset_image index must be an integer"
-            ) from exc
+        index = parse_recipe_int(recipe, "index", -1, line_number)
         if index < 0:
             raise ValueError(f"line {line_number}: hf_dataset_image index must be >= 0, got {index}")
         return
 
     raise ValueError(f"line {line_number}: unsupported image.kind={kind!r}")
+
+
+def parse_recipe_int(recipe: dict[str, object], key: str, default: int, line_number: int) -> int:
+    try:
+        return int(recipe.get(key, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"line {line_number}: {key} must be an integer") from exc
 
 
 def parse_rgb(value: object, label: str, line_number: int) -> tuple[int, int, int]:
@@ -220,7 +222,12 @@ def parse_rgb(value: object, label: str, line_number: int) -> tuple[int, int, in
         )
     channels: list[int] = []
     for i, raw in enumerate(value):
-        channel = int(raw)
+        try:
+            channel = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"line {line_number}: {label}[{i}] must be an integer"
+            ) from exc
         if channel < 0 or channel > 255:
             raise ValueError(
                 f"line {line_number}: {label}[{i}] must be between 0 and 255, got {channel}"

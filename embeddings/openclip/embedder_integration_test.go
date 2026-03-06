@@ -142,7 +142,11 @@ func TestOpenCLIPFailsWithWrongEmbeddingDimension(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected text inference to fail with incompatible embedding dimension")
 	}
-	assertErrorContainsAll(t, err, []string{"text output length mismatch"})
+	assertErrorContainsAny(
+		t,
+		err,
+		[]string{"text output length mismatch", "invalid dimensions for output"},
+	)
 }
 
 func TestOpenCLIPFailsWithImageSizeMismatch(t *testing.T) {

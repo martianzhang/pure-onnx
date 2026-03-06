@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +137,14 @@ func resolveDefaultOpenCLIPAssets(tb testing.TB) ModelAssets {
 
 	assets, err := EnsureDefaultAssets(opts...)
 	if err != nil {
+		if shouldSkipOpenCLIPBootstrapError(err) {
+			tb.Skipf(
+				"unable to bootstrap default OpenCLIP assets (%s@%s): %v",
+				DefaultBootstrapRepoID,
+				DefaultBootstrapRevision,
+				err,
+			)
+		}
 		tb.Fatalf(
 			"failed to bootstrap default OpenCLIP assets (%s@%s): %v",
 			DefaultBootstrapRepoID,
@@ -144,6 +154,37 @@ func resolveDefaultOpenCLIPAssets(tb testing.TB) ModelAssets {
 	}
 
 	return assets
+}
+
+func shouldSkipOpenCLIPBootstrapError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Preserve fail-fast behavior for checksum/config/path integrity errors.
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "checksum") ||
+		strings.Contains(lower, "sha256") ||
+		strings.Contains(lower, "invalid checksum") ||
+		strings.Contains(lower, "missing checksum") ||
+		strings.Contains(lower, "failed validation") {
+		return false
+	}
+
+	var statusErr *downloadStatusError
+	if errors.As(err, &statusErr) {
+		return true
+	}
+
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return true
+	}
+
+	return strings.Contains(lower, "failed to download") ||
+		strings.Contains(lower, "download failed") ||
+		strings.Contains(lower, "download status error") ||
+		strings.Contains(lower, "timeout")
 }
 
 func verifyOpenCLIPFileSHA256(path string, expected string) error {
