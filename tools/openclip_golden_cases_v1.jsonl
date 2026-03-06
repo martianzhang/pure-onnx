@@ -1,0 +1,24 @@
+{"id":"mnist-001","text":"a grayscale handwritten digit from MNIST","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":0}}
+{"id":"mnist-002","text":"a scanned handwritten number","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":1}}
+{"id":"mnist-003","text":"a black and white digit on a dark background","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":2}}
+{"id":"mnist-004","text":"a centered handwritten numeral","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":3}}
+{"id":"mnist-005","text":"an MNIST digit sample","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":4}}
+{"id":"mnist-006","text":"a white handwritten number on black","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":5}}
+{"id":"mnist-007","text":"a grayscale image of a single digit","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":6}}
+{"id":"mnist-008","text":"a handwritten character representing a digit","image":{"kind":"hf_dataset_image","dataset":"ylecun/mnist","split":"test","index":7}}
+{"id":"fashion-001","text":"a grayscale clothing item from Fashion-MNIST","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":0}}
+{"id":"fashion-002","text":"an apparel image in grayscale","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":1}}
+{"id":"fashion-003","text":"a clothing product photo in low resolution","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":2}}
+{"id":"fashion-004","text":"an item of clothing on a dark background","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":3}}
+{"id":"fashion-005","text":"a fashion catalog image in grayscale","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":4}}
+{"id":"fashion-006","text":"a simple garment silhouette","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":5}}
+{"id":"fashion-007","text":"an image of wearable clothing","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":6}}
+{"id":"fashion-008","text":"a monochrome apparel sample","image":{"kind":"hf_dataset_image","dataset":"zalando-datasets/fashion_mnist","split":"test","index":7}}
+{"id":"beans-001","text":"a close-up photo of a bean leaf","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":0}}
+{"id":"beans-002","text":"a field image of bean plant leaves","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":1}}
+{"id":"beans-003","text":"a bean leaf disease classification photo","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":2}}
+{"id":"beans-004","text":"an outdoor bean leaf image","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":3}}
+{"id":"beans-005","text":"a crop health image of a bean leaf","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":4}}
+{"id":"beans-006","text":"a bean leaf under natural lighting","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":5}}
+{"id":"beans-007","text":"a plant pathology image of bean foliage","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":6}}
+{"id":"beans-008","text":"a photographed bean leaf sample","image":{"kind":"hf_dataset_image","dataset":"beans","split":"test","index":7}}

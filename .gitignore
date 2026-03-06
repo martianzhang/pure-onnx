@@ -47,6 +47,12 @@ vendor/
 !.env.example
 !.env.sample
 
+# Python local tooling artifacts
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+
 # OS specific files
 .DS_Store
 Thumbs.db
