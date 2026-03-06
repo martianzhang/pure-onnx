@@ -2,10 +2,13 @@ package openclip
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -34,6 +37,7 @@ type openCLIPGoldenImageRecipe struct {
 	Kind      string `json:"kind"`
 	Width     int    `json:"width"`
 	Height    int    `json:"height"`
+	PNGBase64 string `json:"png_base64"`
 	Color     []int  `json:"color"`
 	ColorA    []int  `json:"color_a"`
 	ColorB    []int  `json:"color_b"`
@@ -231,12 +235,12 @@ func renderOpenCLIPGoldenImage(recipe openCLIPGoldenImageRecipe) (image.Image, e
 	if kind == "" {
 		kind = "solid"
 	}
-	if recipe.Width <= 0 || recipe.Height <= 0 {
-		return nil, fmt.Errorf("width and height must be > 0, got %d x %d", recipe.Width, recipe.Height)
-	}
 
 	switch kind {
 	case "solid":
+		if recipe.Width <= 0 || recipe.Height <= 0 {
+			return nil, fmt.Errorf("width and height must be > 0, got %d x %d", recipe.Width, recipe.Height)
+		}
 		rgb, err := parseRGB(recipe.Color, "color")
 		if err != nil {
 			return nil, err
@@ -247,6 +251,9 @@ func renderOpenCLIPGoldenImage(recipe openCLIPGoldenImageRecipe) (image.Image, e
 			color.NRGBA{R: rgb[0], G: rgb[1], B: rgb[2], A: 255},
 		), nil
 	case "checkerboard":
+		if recipe.Width <= 0 || recipe.Height <= 0 {
+			return nil, fmt.Errorf("width and height must be > 0, got %d x %d", recipe.Width, recipe.Height)
+		}
 		if recipe.BlockSize <= 0 {
 			return nil, fmt.Errorf("block_size must be > 0 for checkerboard, got %d", recipe.BlockSize)
 		}
@@ -265,6 +272,19 @@ func renderOpenCLIPGoldenImage(recipe openCLIPGoldenImageRecipe) (image.Image, e
 			color.NRGBA{R: a[0], G: a[1], B: a[2], A: 255},
 			color.NRGBA{R: b[0], G: b[1], B: b[2], A: 255},
 		), nil
+	case "png_base64":
+		if strings.TrimSpace(recipe.PNGBase64) == "" {
+			return nil, fmt.Errorf("png_base64 payload is empty")
+		}
+		raw, err := base64.StdEncoding.DecodeString(recipe.PNGBase64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid png_base64 payload: %w", err)
+		}
+		img, err := png.Decode(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("invalid PNG payload: %w", err)
+		}
+		return img, nil
 	default:
 		return nil, fmt.Errorf("unsupported image kind %q", recipe.Kind)
 	}

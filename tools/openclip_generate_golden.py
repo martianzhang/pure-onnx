@@ -12,14 +12,15 @@ Example:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, TypeVar
 
 import numpy as np
 import torch
@@ -50,7 +51,10 @@ def parse_args() -> argparse.Namespace:
         "--cases-jsonl",
         type=Path,
         required=True,
-        help="Input JSONL with rows {id,text,image}.",
+        help=(
+            "Input JSONL with rows {id,text,image}. "
+            "Supported image kinds: solid, checkerboard, png_base64, hf_dataset_image."
+        ),
     )
     parser.add_argument(
         "--output-jsonl",
@@ -159,17 +163,23 @@ def parse_cases(path: Path) -> list[GoldenCase]:
 
 def validate_image_recipe(recipe: dict[str, object], line_number: int) -> None:
     kind = str(recipe.get("kind", "solid")).strip().lower()
-    width = int(recipe.get("width", 0))
-    height = int(recipe.get("height", 0))
-    if width <= 0 or height <= 0:
-        raise ValueError(
-            f"line {line_number}: image width/height must be > 0, got {width}x{height}"
-        )
 
     if kind == "solid":
+        width = int(recipe.get("width", 0))
+        height = int(recipe.get("height", 0))
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"line {line_number}: image width/height must be > 0, got {width}x{height}"
+            )
         parse_rgb(recipe.get("color"), "color", line_number)
         return
     if kind == "checkerboard":
+        width = int(recipe.get("width", 0))
+        height = int(recipe.get("height", 0))
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"line {line_number}: image width/height must be > 0, got {width}x{height}"
+            )
         parse_rgb(recipe.get("color_a"), "color_a", line_number)
         parse_rgb(recipe.get("color_b"), "color_b", line_number)
         block_size = int(recipe.get("block_size", 0))
@@ -177,6 +187,27 @@ def validate_image_recipe(recipe: dict[str, object], line_number: int) -> None:
             raise ValueError(
                 f"line {line_number}: checkerboard block_size must be > 0, got {block_size}"
             )
+        return
+    if kind == "png_base64":
+        payload = recipe.get("png_base64")
+        if not isinstance(payload, str) or not payload.strip():
+            raise ValueError(f"line {line_number}: png_base64 image must include non-empty png_base64")
+        return
+    if kind == "hf_dataset_image":
+        dataset_id = str(recipe.get("dataset", "")).strip()
+        split = str(recipe.get("split", "")).strip()
+        if not dataset_id:
+            raise ValueError(f"line {line_number}: hf_dataset_image requires non-empty dataset")
+        if not split:
+            raise ValueError(f"line {line_number}: hf_dataset_image requires non-empty split")
+        try:
+            index = int(recipe.get("index", -1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"line {line_number}: hf_dataset_image index must be an integer"
+            ) from exc
+        if index < 0:
+            raise ValueError(f"line {line_number}: hf_dataset_image index must be >= 0, got {index}")
         return
 
     raise ValueError(f"line {line_number}: unsupported image.kind={kind!r}")
@@ -200,10 +231,10 @@ def parse_rgb(value: object, label: str, line_number: int) -> tuple[int, int, in
 
 def render_image(recipe: dict[str, object]) -> np.ndarray:
     kind = str(recipe.get("kind", "solid")).strip().lower() or "solid"
-    width = int(recipe["width"])
-    height = int(recipe["height"])
 
     if kind == "solid":
+        width = int(recipe["width"])
+        height = int(recipe["height"])
         r, g, b = parse_rgb(recipe["color"], "color", 0)
         image = np.zeros((height, width, 3), dtype=np.uint8)
         image[:, :, 0] = r
@@ -212,6 +243,8 @@ def render_image(recipe: dict[str, object]) -> np.ndarray:
         return image
 
     if kind == "checkerboard":
+        width = int(recipe["width"])
+        height = int(recipe["height"])
         r1, g1, b1 = parse_rgb(recipe["color_a"], "color_a", 0)
         r2, g2, b2 = parse_rgb(recipe["color_b"], "color_b", 0)
         block_size = int(recipe["block_size"])
@@ -226,20 +259,186 @@ def render_image(recipe: dict[str, object]) -> np.ndarray:
                     image[y, x] = (r2, g2, b2)
         return image
 
+    if kind == "png_base64":
+        payload = str(recipe.get("png_base64", "")).strip()
+        if payload == "":
+            raise ValueError("png_base64 image is missing png_base64 payload")
+        try:
+            from PIL import Image as PILImage
+        except ImportError as exc:
+            raise ValueError(
+                "png_base64 image decoding requires Pillow; install with: pip install Pillow"
+            ) from exc
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (base64.binascii.Error, ValueError) as exc:
+            raise ValueError(f"invalid png_base64 payload: {exc}") from exc
+        with io.BytesIO(raw) as buffer:
+            with PILImage.open(buffer) as image:
+                return np.asarray(image.convert("RGB"))
+
     raise ValueError(f"unsupported image.kind={kind!r}")
 
 
-T = TypeVar("T")
+def materialize_case_image(
+    recipe: dict[str, object],
+    dataset_cache: dict[tuple[str, str, str], object],
+    hf_token: str | None,
+) -> tuple[np.ndarray, dict[str, object], str | None]:
+    kind = str(recipe.get("kind", "solid")).strip().lower() or "solid"
+    if kind != "hf_dataset_image":
+        rendered = render_image(recipe)
+        return rendered, recipe, None
+
+    rendered, source_info = render_hf_dataset_image(recipe, dataset_cache, hf_token)
+    encoded = encode_png_base64_image(rendered, source_info)
+    return rendered, encoded, str(source_info["dataset"])
 
 
-def batched(items: list[T], batch_size: int) -> Iterable[list[T]]:
-    for start in range(0, len(items), batch_size):
-        yield items[start : start + batch_size]
+def render_hf_dataset_image(
+    recipe: dict[str, object],
+    dataset_cache: dict[tuple[str, str, str], object],
+    hf_token: str | None,
+) -> tuple[np.ndarray, dict[str, object]]:
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise ValueError(
+            "hf_dataset_image cases require the datasets package; install with: pip install datasets"
+        ) from exc
 
+    dataset_id = str(recipe.get("dataset", "")).strip()
+    config = str(recipe.get("config", "")).strip()
+    split = str(recipe.get("split", "")).strip()
+    index = int(recipe.get("index", 0))
+    image_column = str(recipe.get("image_column", "image")).strip() or "image"
+    label_column = str(recipe.get("label_column", "label")).strip() or "label"
+
+    cache_key = (dataset_id, config, split)
+    dataset = dataset_cache.get(cache_key)
+    if dataset is None:
+        kwargs: dict[str, object] = {"split": split, "token": hf_token}
+        if config:
+            kwargs["name"] = config
+        dataset = load_dataset(dataset_id, **kwargs)
+        dataset_cache[cache_key] = dataset
+
+    row_count = len(dataset)
+    if index >= row_count:
+        raise ValueError(
+            f"hf_dataset_image index {index} out of range for {dataset_id}:{split} (rows={row_count})"
+        )
+
+    row = dataset[index]
+    if image_column not in row:
+        raise ValueError(
+            f"hf_dataset_image row missing image column {image_column!r} for {dataset_id}:{split}[{index}]"
+        )
+    image_array = image_value_to_rgb_array(row[image_column])
+
+    source_info: dict[str, object] = {
+        "kind": "hf_dataset_image",
+        "dataset": dataset_id,
+        "split": split,
+        "index": index,
+    }
+    if config:
+        source_info["config"] = config
+    if image_column != "image":
+        source_info["image_column"] = image_column
+    if label_column in row:
+        label_value = to_json_scalar(row[label_column])
+        if label_value is not None:
+            source_info["label"] = label_value
+            source_info["label_column"] = label_column
+
+    return image_array, source_info
+
+
+def image_value_to_rgb_array(image_value: object) -> np.ndarray:
+    try:
+        from PIL import Image as PILImage
+    except ImportError as exc:
+        raise ValueError(
+            "image decoding requires Pillow; install with: pip install Pillow"
+        ) from exc
+
+    image_obj = None
+    if isinstance(image_value, np.ndarray):
+        if image_value.ndim == 2:
+            image_value = np.stack([image_value] * 3, axis=-1)
+        if image_value.ndim == 3 and image_value.shape[2] >= 3:
+            return image_value[:, :, :3].astype(np.uint8, copy=False)
+        raise ValueError(f"unsupported numpy image shape: {image_value.shape}")
+    if isinstance(image_value, dict):
+        if image_value.get("bytes") is not None:
+            image_obj = PILImage.open(io.BytesIO(image_value["bytes"]))
+        elif image_value.get("path"):
+            image_obj = PILImage.open(str(image_value["path"]))
+    elif hasattr(image_value, "convert"):
+        image_obj = image_value
+
+    if image_obj is None:
+        raise ValueError(f"unsupported image value type: {type(image_value)}")
+
+    return np.asarray(image_obj.convert("RGB"))
+
+
+def encode_png_base64_image(image: np.ndarray, source_info: dict[str, object]) -> dict[str, object]:
+    try:
+        from PIL import Image as PILImage
+    except ImportError as exc:
+        raise ValueError(
+            "PNG encoding requires Pillow; install with: pip install Pillow"
+        ) from exc
+
+    image_uint8 = image.astype(np.uint8, copy=False)
+    pil = PILImage.fromarray(image_uint8, mode="RGB")
+    with io.BytesIO() as buffer:
+        pil.save(buffer, format="PNG")
+        payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    return {
+        "kind": "png_base64",
+        "png_base64": payload,
+        "width": int(pil.width),
+        "height": int(pil.height),
+        "source": source_info,
+    }
+
+
+def to_json_scalar(value: object) -> int | float | str | bool | None:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        converted = item()
+        if isinstance(converted, (bool, int, float, str)):
+            return converted
+    return str(value)
 
 def normalize_rows(vectors: torch.Tensor) -> torch.Tensor:
     norms = vectors.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     return vectors / norms
+
+
+def coerce_feature_tensor(value: object, label: str) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value
+
+    # transformers version compatibility: some APIs return model output objects
+    # instead of raw tensors.
+    for attr in ("text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
+        candidate = getattr(value, attr, None)
+        if isinstance(candidate, torch.Tensor):
+            if attr == "last_hidden_state":
+                # [batch, seq, hidden] -> [batch, hidden]
+                return candidate[:, 0, :]
+            return candidate
+
+    raise ValueError(f"{label} did not return a tensor-compatible output (type={type(value)})")
 
 
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -313,13 +512,30 @@ def main() -> int:
     ).to(device)
     model.eval()
 
+    dataset_cache: dict[tuple[str, str, str], object] = {}
+    source_dataset_counts: dict[str, int] = {}
+    materialized_images: list[np.ndarray] = []
+    materialized_image_recipes: list[dict[str, object]] = []
+    for case in cases:
+        image_value, image_recipe, source_dataset = materialize_case_image(
+            case.image,
+            dataset_cache,
+            hf_token,
+        )
+        materialized_images.append(image_value)
+        materialized_image_recipes.append(image_recipe)
+        if source_dataset is not None:
+            source_dataset_counts[source_dataset] = source_dataset_counts.get(source_dataset, 0) + 1
+
     all_text_embeddings: list[torch.Tensor] = []
     all_image_embeddings: list[torch.Tensor] = []
 
-    for batch_index, case_batch in enumerate(batched(cases, args.batch_size), start=1):
+    for batch_index, batch_start in enumerate(range(0, len(cases), args.batch_size), start=1):
+        batch_end = min(batch_start + args.batch_size, len(cases))
+        case_batch = cases[batch_start:batch_end]
         print(f"Encoding batch {batch_index} ({len(case_batch)} rows)", file=sys.stderr)
         texts = [case.text for case in case_batch]
-        images = [render_image(case.image) for case in case_batch]
+        images = materialized_images[batch_start:batch_end]
 
         text_inputs = tokenizer(
             texts,
@@ -334,11 +550,13 @@ def main() -> int:
         pixel_values = image_inputs["pixel_values"].to(device)
 
         with torch.inference_mode():
-            text_features = model.get_text_features(
+            text_features_raw = model.get_text_features(
                 input_ids=text_inputs["input_ids"],
                 attention_mask=text_inputs["attention_mask"],
             )
-            image_features = model.get_image_features(pixel_values=pixel_values)
+            image_features_raw = model.get_image_features(pixel_values=pixel_values)
+            text_features = coerce_feature_tensor(text_features_raw, "get_text_features")
+            image_features = coerce_feature_tensor(image_features_raw, "get_image_features")
             text_features = normalize_rows(text_features)
             image_features = normalize_rows(image_features)
 
@@ -369,7 +587,7 @@ def main() -> int:
             {
                 "id": case.case_id,
                 "text": case.text,
-                "image": case.image,
+                "image": materialized_image_recipes[i],
                 "text_prefix": text_np[i, :prefix_length].astype(float).tolist(),
                 "image_prefix": image_np[i, :prefix_length].astype(float).tolist(),
                 "logits_row": logits_np[i, :].astype(float).tolist(),
@@ -388,8 +606,10 @@ def main() -> int:
         "source_type": "local_transformers_clip",
         "model_repo": args.model_name,
         "model_revision": args.revision,
+        "cases_path": str(args.cases_jsonl),
         "row_count": len(rows),
         "dataset_digest_sha256": digest,
+        "source_datasets": source_dataset_counts,
         "settings": {
             "sequence_length": args.sequence_length,
             "batch_size": args.batch_size,
@@ -400,7 +620,7 @@ def main() -> int:
         "row_schema": {
             "id": "string",
             "text": "string",
-            "image": "{kind,width,height,...}",
+            "image": "{kind,width,height,png_base64,source}",
             "text_prefix": "[]float32",
             "image_prefix": "[]float32",
             "logits_row": "[]float32",

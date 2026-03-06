@@ -222,6 +222,14 @@ go test -v ./embeddings/openclip -run TestOpenCLIPGoldenDatasetParity -count=1
 
 Generate an OpenCLIP golden dataset locally (no hosted endpoint required):
 ```bash
+# The default cases file includes 24 rows:
+# - 8 from ylecun/mnist (MIT)
+# - 8 from zalando-datasets/fashion_mnist (MIT)
+# - 8 from beans (MIT)
+#
+# If your environment does not already have these packages:
+# pip install datasets Pillow
+
 python3 ./tools/openclip_generate_golden.py \
   --cases-jsonl ./tools/openclip_golden_cases_v1.jsonl \
   --output-jsonl ./openclip_endpoint_golden/v1/openclip_vit_b_32_laion2b_s34b_b79k_prefix64_v1.jsonl \
@@ -230,6 +238,9 @@ python3 ./tools/openclip_generate_golden.py \
   --revision 1a25a446712ba5ee05982a381eed697ef9b435cf \
   --prefix-length 64
 ```
+
+The generated JSONL stores images as embedded `png_base64` payloads, so parity
+tests remain self-contained after publishing to `tazarov/pure-onnx`.
 
 ## Continuous Integration
 
