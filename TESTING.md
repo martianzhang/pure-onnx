@@ -225,7 +225,7 @@ Generate an OpenCLIP golden dataset locally (no hosted endpoint required):
 # The default cases file includes 24 rows:
 # - 8 from ylecun/mnist (MIT)
 # - 8 from zalando-datasets/fashion_mnist (MIT)
-# - 8 from beans (MIT)
+# - 8 from beans (MIT, per HF dataset card tag)
 #
 # If your environment does not already have these packages:
 # pip install datasets Pillow

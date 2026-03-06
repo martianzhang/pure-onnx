@@ -45,18 +45,19 @@ type openCLIPGoldenImageRecipe struct {
 }
 
 func TestOpenCLIPGoldenDatasetParity(t *testing.T) {
-	jsonlURL := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_JSONL_URL"))
+	configuredURL := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_JSONL_URL"))
+	configuredRepo := strings.TrimSpace(os.Getenv("HF_DATASET_REPO"))
+	jsonlURL := configuredURL
 	if jsonlURL == "" {
-		repo := strings.TrimSpace(os.Getenv("HF_DATASET_REPO"))
-		if repo == "" {
+		if configuredRepo == "" {
 			t.Skip("set ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_JSONL_URL or HF_DATASET_REPO to run OpenCLIP golden dataset parity test")
 		}
-		jsonlURL = fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%s", repo, openCLIPGoldenDefaultDatasetPath)
+		jsonlURL = fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%s", configuredRepo, openCLIPGoldenDefaultDatasetPath)
 	}
 
 	rows, err := downloadOpenCLIPGoldenRows(jsonlURL, strings.TrimSpace(os.Getenv("HF_TOKEN")))
 	if err != nil {
-		t.Skipf("unable to load OpenCLIP golden dataset from %s: %v", jsonlURL, err)
+		t.Fatalf("unable to load OpenCLIP golden dataset from %s: %v", jsonlURL, err)
 	}
 	if len(rows) == 0 {
 		t.Fatalf("OpenCLIP golden dataset is empty")

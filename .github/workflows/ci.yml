@@ -141,6 +141,7 @@ jobs:
       ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256: '0934583a27a031a66b2e847cbc260fbbef29689e969f500436460ef5146a43f2'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_URL: 'https://huggingface.co/prithivida/Splade_PP_en_v1/resolve/762be6a7206e2f299182705972a65e5c46e62be2/tokenizer.json'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256: '2fc687b11de0bc1b3d8348f92e3b49ef1089a621506c7661fbf3248fcd54947e'
+      # Documentation/cache-key marker only; runtime defaults are pinned in embeddings/openclip/bootstrap.go.
       ONNXRUNTIME_TEST_OPENCLIP_REPO_ID: 'amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx'
       ONNXRUNTIME_TEST_OPENCLIP_REVISION: '248a2ed76a7189fc080e654e36930171331ef085'
       ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256: '252b86e0ef1fc95b22cfd52fbf647142727fdbecc152556ffe0fba0b10a80370'
@@ -161,7 +162,7 @@ jobs:
       - name: Get dependencies
         run: go mod download
 
-      - name: Cache all-MiniLM model
+      - name: Cache embedding model assets
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
@@ -201,7 +202,7 @@ jobs:
 
       - name: Run OpenCLIP real-model integration tests
         run: |
-          go test -v ./embeddings/openclip -run 'TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch'
+          go test -v ./embeddings/openclip -run 'TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent'
 
       - name: Run OpenCLIP public golden parity test
         run: |

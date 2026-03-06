@@ -24,22 +24,23 @@ type goldenDatasetRow struct {
 }
 
 func TestSPLADEGoldenDatasetParity(t *testing.T) {
-	jsonlURL := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_SPLADE_GOLDEN_JSONL_URL"))
+	configuredURL := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_SPLADE_GOLDEN_JSONL_URL"))
+	configuredLegacyURL := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_SPLADE_PRIVATE_GOLDEN_JSONL_URL"))
+	configuredRepo := strings.TrimSpace(os.Getenv("HF_DATASET_REPO"))
+	jsonlURL := configuredURL
 	if jsonlURL == "" {
-		// Compatibility alias for older setups.
-		jsonlURL = strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_SPLADE_PRIVATE_GOLDEN_JSONL_URL"))
+		jsonlURL = configuredLegacyURL
 	}
 	if jsonlURL == "" {
-		repo := strings.TrimSpace(os.Getenv("HF_DATASET_REPO"))
-		if repo == "" {
+		if configuredRepo == "" {
 			t.Skip("set ONNXRUNTIME_TEST_SPLADE_GOLDEN_JSONL_URL or HF_DATASET_REPO to run SPLADE golden dataset parity test")
 		}
-		jsonlURL = fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/splade_endpoint_golden/v1/splade_pp_en_v1_endpoint_topk24_labels_v1.jsonl", repo)
+		jsonlURL = fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/splade_endpoint_golden/v1/splade_pp_en_v1_endpoint_topk24_labels_v1.jsonl", configuredRepo)
 	}
 
 	rows, err := downloadGoldenRows(jsonlURL, strings.TrimSpace(os.Getenv("HF_TOKEN")))
 	if err != nil {
-		t.Skipf("unable to load golden dataset from %s: %v", jsonlURL, err)
+		t.Fatalf("unable to load golden dataset from %s: %v", jsonlURL, err)
 	}
 	if len(rows) == 0 {
 		t.Fatalf("golden dataset is empty")

@@ -67,6 +67,11 @@ func resolveOpenCLIPAssets(tb testing.TB) ModelAssets {
 
 	switch explicitCount {
 	case 0:
+		tb.Logf(
+			"using default OpenCLIP asset bootstrap (%s@%s); explicit test asset paths were not set",
+			DefaultBootstrapRepoID,
+			DefaultBootstrapRevision,
+		)
 		return resolveDefaultOpenCLIPAssets(tb)
 	case 4:
 		return ModelAssets{
@@ -105,6 +110,13 @@ func resolveOpenCLIPAssetPath(tb testing.TB, envPathKey string, envSHAKey string
 		if err := verifyOpenCLIPFileSHA256(path, expectedSHA); err != nil {
 			tb.Fatalf("%s failed checksum validation: %v", envPathKey, err)
 		}
+	} else {
+		tb.Logf(
+			"WARNING: %s is set but %s is unset; skipping SHA256 validation for %s",
+			envPathKey,
+			envSHAKey,
+			label,
+		)
 	}
 
 	return path, true

@@ -109,10 +109,11 @@ func TestOpenCLIPFailsWithWrongInputOutputNames(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected text inference to fail with incorrect text input/output names")
 	}
+	assertErrorContainsAll(t, err, []string{"text embedding inference failed"})
 	assertErrorContainsAny(
 		t,
 		err,
-		[]string{"text embedding inference failed", "input", "output", "name", "bad_input_ids", "bad_text_output"},
+		[]string{"bad_input_ids", "bad_attention_mask", "bad_text_output"},
 	)
 }
 
@@ -141,11 +142,7 @@ func TestOpenCLIPFailsWithWrongEmbeddingDimension(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected text inference to fail with incompatible embedding dimension")
 	}
-	assertErrorContainsAny(
-		t,
-		err,
-		[]string{"text embedding inference failed", "shape", "dimension", "mismatch", "text output length mismatch"},
-	)
+	assertErrorContainsAll(t, err, []string{"text output length mismatch"})
 }
 
 func TestOpenCLIPFailsWithImageSizeMismatch(t *testing.T) {
@@ -175,11 +172,62 @@ func TestOpenCLIPFailsWithImageSizeMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected image inference to fail with forced non-default image size")
 	}
+	assertErrorContainsAll(t, err, []string{"vision embedding inference failed"})
 	assertErrorContainsAny(
 		t,
 		err,
-		[]string{"vision embedding inference failed", "shape", "dimension", "pixel_values", "mismatch"},
+		[]string{"pixel_values", "invalid dimensions", "dimension"},
 	)
+}
+
+func TestOpenCLIPErrorsAfterClose(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	assets := resolveOpenCLIPAssets(t)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+	)
+	if err != nil {
+		t.Fatalf("failed to create openclip embedder: %v", err)
+	}
+	if err := embedder.Close(); err != nil {
+		t.Fatalf("failed to close openclip embedder: %v", err)
+	}
+
+	_, err = embedder.EmbedTexts([]string{"a photo of a cat"})
+	assertErrorContainsAll(t, err, []string{"embedder has been closed"})
+
+	_, err = embedder.EmbedImages([]image.Image{
+		solidImage(224, 224, color.NRGBA{R: 128, G: 128, B: 128, A: 255}),
+	})
+	assertErrorContainsAll(t, err, []string{"embedder has been closed"})
+}
+
+func TestOpenCLIPCloseIsIdempotent(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	assets := resolveOpenCLIPAssets(t)
+	embedder, err := NewEmbedder(
+		assets.TextModelPath,
+		assets.VisionModelPath,
+		assets.TokenizerPath,
+		assets.PreprocessorConfigPath,
+	)
+	if err != nil {
+		t.Fatalf("failed to create openclip embedder: %v", err)
+	}
+
+	if err := embedder.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+	if err := embedder.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
 }
 
 func assertApproxUnitNormIntegration(t *testing.T, label string, values []float32, epsilon float64) {
@@ -215,4 +263,17 @@ func assertErrorContainsAny(t *testing.T, err error, fragments []string) {
 		}
 	}
 	t.Fatalf("error %q did not contain any of expected fragments: %v", err.Error(), fragments)
+}
+
+func assertErrorContainsAll(t *testing.T, err error, fragments []string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	got := strings.ToLower(err.Error())
+	for _, fragment := range fragments {
+		if !strings.Contains(got, strings.ToLower(fragment)) {
+			t.Fatalf("error %q did not contain required fragment %q", err.Error(), fragment)
+		}
+	}
 }
