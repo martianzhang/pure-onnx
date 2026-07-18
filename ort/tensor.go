@@ -327,6 +327,8 @@ func tensorElementType[T any]() (TensorElementDataType, uintptr, error) {
 	switch any(zero).(type) {
 	case float32:
 		return TensorElementDataTypeFloat, unsafe.Sizeof(zero), nil
+	case uint8:
+		return TensorElementDataTypeUint8, unsafe.Sizeof(zero), nil
 	case float64:
 		return TensorElementDataTypeDouble, unsafe.Sizeof(zero), nil
 	case int32:
