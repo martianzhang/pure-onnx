@@ -5,8 +5,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-
-	"github.com/ebitengine/purego"
 )
 
 // NewSessionOptions creates a new SessionOptions with default settings.
@@ -70,11 +68,11 @@ func cudaRuntimeAvailable() bool {
 	default:
 		return false
 	}
-	handle, err := purego.Dlopen(libName, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	handle, err := loadLibrary(libName)
 	if err != nil || handle == 0 {
 		return false
 	}
-	purego.Dlclose(handle)
+	closeLibrary(handle)
 	return true
 }
 
