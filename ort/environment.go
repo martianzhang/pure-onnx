@@ -48,6 +48,8 @@ var (
 	createSessionFunc                  func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr
 	runSessionFunc                     func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
 	releaseSessionFunc                 func(uintptr)
+	appendExecutionProviderCUDAFunc    func(options uintptr, deviceID int32) uintptr
+	appendExecutionProviderByNameFunc  func(options uintptr, providerName uintptr) uintptr
 )
 
 func clearORTGlobalsLocked() {
@@ -65,6 +67,8 @@ func clearORTGlobalsLocked() {
 	createSessionFunc = nil
 	runSessionFunc = nil
 	releaseSessionFunc = nil
+	appendExecutionProviderCUDAFunc = nil
+	appendExecutionProviderByNameFunc = nil
 }
 
 // getErrorMessage extracts the error message from an ORT status code.
@@ -159,6 +163,15 @@ func InitializeEnvironment() (err error) {
 	purego.RegisterFunc(&createSessionFunc, ortAPI.CreateSession)
 	purego.RegisterFunc(&runSessionFunc, ortAPI.Run)
 	purego.RegisterFunc(&releaseSessionFunc, ortAPI.ReleaseSession)
+	// CUDA execution provider is only available if the loaded ONNX Runtime library
+	// supports it (onnxruntime-gpu vs onnxruntime CPU-only). Conditionally register
+	// so the function pointer stays nil on CPU-only builds, allowing graceful fallback.
+	if ortAPI.SessionOptionsAppendExecutionProvider_CUDA != 0 {
+		purego.RegisterFunc(&appendExecutionProviderCUDAFunc, ortAPI.SessionOptionsAppendExecutionProvider_CUDA)
+	}
+	if ortAPI.SessionOptionsAppendExecutionProvider != 0 {
+		purego.RegisterFunc(&appendExecutionProviderByNameFunc, ortAPI.SessionOptionsAppendExecutionProvider)
+	}
 
 	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
